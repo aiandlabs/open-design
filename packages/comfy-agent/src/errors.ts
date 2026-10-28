@@ -20,6 +20,7 @@ export type ComfyErrorCode =
   | "LLM_HTTP"
   | "LLM_FORMAT"
   | "LLM_CONFIG"
+  | "LLM_MODEL"
   | "IMAGE_FORMAT";
 
 export class ComfyAgentError extends Error {
@@ -226,6 +227,60 @@ export class LlmFormatError extends ComfyAgentError {
 export class LlmConfigError extends ComfyAgentError {
   constructor(message: string) {
     super("LLM_CONFIG", message);
+  }
+}
+
+export type ModelSelectionReason = "unknown" | "missing-capability" | "deprecated" | "none-capable";
+
+/**
+ * No usable model for a role: the configured id is not in the ai& catalog,
+ * lacks a capability the role needs, is deprecated, or (with nothing
+ * configured) no listed model has the capabilities. `choices` lists the ids
+ * that would work.
+ */
+export class ModelSelectionError extends ComfyAgentError {
+  readonly role: string;
+  readonly model: string | undefined;
+  readonly reason: ModelSelectionReason;
+  readonly missing: string[];
+  readonly required: string[];
+  readonly choices: string[];
+  readonly deprecationDate: string | undefined;
+  constructor(input: {
+    role: string;
+    model?: string;
+    reason: ModelSelectionReason;
+    missing?: readonly string[];
+    required: readonly string[];
+    choices: readonly string[];
+    deprecationDate?: string;
+  }) {
+    const need = input.required.join(", ");
+    const valid = input.choices.length > 0 ? `valid ${input.role} models: ${input.choices.join(", ")}` : "the ai& catalog lists no valid model";
+    const what =
+      input.reason === "unknown" ? `${input.role} model "${input.model}" is not in the ai& model list`
+        : input.reason === "missing-capability" ? `${input.role} model "${input.model}" lacks ${(input.missing ?? []).join(", ")} (the ${input.role} needs ${need})`
+          : input.reason === "deprecated" ? `${input.role} model "${input.model}" is deprecated${input.deprecationDate ? ` since ${input.deprecationDate}` : ""}`
+            : `no ai& model has ${need} for the ${input.role}`;
+    super("LLM_MODEL", `${what}; ${valid}`);
+    this.role = input.role;
+    this.model = input.model;
+    this.reason = input.reason;
+    this.missing = [...(input.missing ?? [])];
+    this.required = [...input.required];
+    this.choices = [...input.choices];
+    this.deprecationDate = input.deprecationDate;
+  }
+  override toJSON() {
+    return {
+      ...super.toJSON(),
+      role: this.role,
+      ...(this.model ? { model: this.model } : {}),
+      reason: this.reason,
+      ...(this.missing.length ? { missing: this.missing } : {}),
+      required: this.required,
+      choices: this.choices,
+    };
   }
 }
 

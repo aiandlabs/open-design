@@ -1,7 +1,8 @@
 // One place that turns env vars plus explicit settings into agent config, so
 // the MCP bin and the Open Design daemon resolve the same values the same way.
 
-import { DEFAULT_AIAND_BASE_URL, DEFAULT_CRITIC_MODEL, DEFAULT_PLANNER_MODEL, type ApiShape } from "./llm.js";
+import type { ApiShape } from "./llm.js";
+import { DEFAULT_AIAND_BASE_URL } from "./models.js";
 
 export const DEFAULT_COMFYUI_URL = "http://127.0.0.1:8188";
 
@@ -9,8 +10,9 @@ export type ComfyAgentConfig = {
   comfyUrl: string;
   aiandApiKey?: string;
   aiandBaseUrl: string;
-  plannerModel: string;
-  criticModel: string;
+  /** Absent means: pick from the ai& model catalog (see ./models.ts). */
+  plannerModel?: string;
+  criticModel?: string;
   apiShape: ApiShape;
   plannerReasoningEffort?: string;
   criticReasoningEffort?: string;
@@ -60,17 +62,23 @@ export function parseModelSettings(value: string | undefined): Partial<Pick<Comf
   return out;
 }
 
-/** Explicit input wins over env; env wins over defaults. */
+/**
+ * Explicit input wins over env; env wins over defaults. Models have no
+ * literal default: an unset model is chosen from the live catalog when the
+ * loop starts, and a set one is validated there.
+ */
 export function resolveComfyAgentConfig(input: ComfyAgentConfigInput = {}, env: NodeJS.ProcessEnv = process.env): ComfyAgentConfig {
   const key = clean(input.aiandApiKey) ?? clean(env.AIAND_API_KEY);
   const plannerEffort = clean(input.plannerReasoningEffort) ?? clean(env.COMFY_AGENT_PLANNER_REASONING);
   const criticEffort = clean(input.criticReasoningEffort) ?? clean(env.COMFY_AGENT_CRITIC_REASONING);
+  const planner = clean(input.plannerModel) ?? clean(env.COMFY_AGENT_PLANNER_MODEL);
+  const critic = clean(input.criticModel) ?? clean(env.COMFY_AGENT_CRITIC_MODEL);
   return {
     comfyUrl: (clean(input.comfyUrl) ?? clean(env.COMFYUI_URL) ?? DEFAULT_COMFYUI_URL).replace(/\/+$/, ""),
     ...(key ? { aiandApiKey: key } : {}),
     aiandBaseUrl: (clean(input.aiandBaseUrl) ?? clean(env.AIAND_BASE_URL) ?? DEFAULT_AIAND_BASE_URL).replace(/\/+$/, ""),
-    plannerModel: clean(input.plannerModel) ?? clean(env.COMFY_AGENT_PLANNER_MODEL) ?? DEFAULT_PLANNER_MODEL,
-    criticModel: clean(input.criticModel) ?? clean(env.COMFY_AGENT_CRITIC_MODEL) ?? DEFAULT_CRITIC_MODEL,
+    ...(planner ? { plannerModel: planner } : {}),
+    ...(critic ? { criticModel: critic } : {}),
     apiShape: input.apiShape ?? parseApiShape(env.COMFY_AGENT_API_SHAPE) ?? "openai",
     ...(plannerEffort ? { plannerReasoningEffort: plannerEffort } : {}),
     ...(criticEffort ? { criticReasoningEffort: criticEffort } : {}),

@@ -37,8 +37,6 @@ import {
   type RgbaImage,
 } from "./image.js";
 import {
-  DEFAULT_CRITIC_MODEL,
-  DEFAULT_PLANNER_MODEL,
   type AiandClient,
   type ApiShape,
   type ContentPart,
@@ -88,6 +86,7 @@ export type AssetLimits = {
 export type AssetLoopOptions = {
   comfy: ComfyClient;
   llm: AiandClient;
+  /** Absent: chosen from the ai& catalog. Set: checked against it (exists, has the role's capabilities). */
   plannerModel?: string;
   criticModel?: string;
   /** API shape per role; defaults to the client's shape. */
@@ -210,8 +209,11 @@ export async function generateAsset(request: AssetRequest, options: AssetLoopOpt
   validateRequest(request);
   const startedAt = Date.now();
   const limits: Required<AssetLimits> = { ...DEFAULT_LIMITS, ...stripUndefined(options.limits ?? {}) };
-  const plannerModel = options.plannerModel ?? DEFAULT_PLANNER_MODEL;
-  const criticModel = options.criticModel ?? DEFAULT_CRITIC_MODEL;
+  // Resolve both models before touching ComfyUI, so a bad model id fails fast.
+  const [plannerModel, criticModel] = await Promise.all([
+    options.llm.resolveModel("planner", options.plannerModel),
+    options.llm.resolveModel("critic", options.criticModel),
+  ]);
   const plannerShape = options.plannerShape ?? options.llm.shape;
   const criticShape = options.criticShape ?? options.llm.shape;
   const log = (m: string) => options.onProgress?.(m);

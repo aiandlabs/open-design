@@ -6,7 +6,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { ComfyClient } from "../src/client.js";
-import { ComfyExecutionError } from "../src/errors.js";
+import { ComfyExecutionError, ModelSelectionError } from "../src/errors.js";
 import { alphaStats, createImage, decodePng, encodePng, type RgbaImage } from "../src/image.js";
 import { AiandClient } from "../src/llm.js";
 import { generateAsset } from "../src/loop.js";
@@ -31,8 +31,9 @@ function stubLlm(script: { plan: unknown; critic: (n: number, body: Record<strin
     const url = String(input);
     if (url.endsWith("/models")) {
       return new Response(JSON.stringify({ data: [
-        { id: "test/planner", input_per_1m: "3", output_per_1m: "12" },
-        { id: "test/critic", input_per_1m: "0.15", output_per_1m: "0.5" },
+        { id: "test/planner", capabilities: ["vision", "tool_calling"], input_per_1m: "3", output_per_1m: "12" },
+        { id: "test/critic", capabilities: ["vision", "tool_calling"], input_per_1m: "0.15", output_per_1m: "0.5" },
+        { id: "test/text-only", capabilities: ["chat", "tool_calling"], input_per_1m: "1", output_per_1m: "1" },
       ] }));
     }
     const body = JSON.parse(String(init!.body)) as Record<string, unknown>;
@@ -281,6 +282,27 @@ describe("generateAsset", () => {
     const { comfy, workDir } = await setup({ scenario: () => ({ kind: "execution-error", nodeId: "decode", nodeType: "VAEDecode", message: "bad" }) });
     const { llm } = stubLlm({ plan: PLAN, critic: () => ({ items: [] }) });
     await expect(generateAsset({ prompt: "x", width: 512, height: 512 }, { comfy, llm, workDir, plannerModel: "test/planner", criticModel: "test/critic" })).rejects.toBeInstanceOf(ComfyExecutionError);
+  });
+});
+
+describe("generateAsset model selection", () => {
+  it("picks both models from the catalog when none is configured", async () => {
+    const { comfy, workDir } = await setup({ render: () => lanternPng(768, 768) });
+    const { llm, log } = stubLlm({ plan: PLAN, critic: () => ({ items: [{ id: "count", pass: true }, { id: "background", pass: true }] }) });
+    const res = await generateAsset({ prompt: "lantern", width: 768, height: 768 }, { comfy, llm, workDir });
+    // No preferred id is listed by this stub, so the first capable model wins.
+    expect(res.trace.models).toMatchObject({ planner: "test/planner", critic: "test/planner" });
+    expect(log.every((l) => l.body.model === "test/planner")).toBe(true);
+  });
+
+  it("rejects a configured critic without vision before it touches ComfyUI", async () => {
+    const { fake, comfy, workDir } = await setup({ render: () => lanternPng(768, 768) });
+    const { llm, log } = stubLlm({ plan: PLAN, critic: () => ({ items: [] }) });
+    const err = await generateAsset({ prompt: "x", width: 512, height: 512 }, { comfy, llm, workDir, plannerModel: "test/planner", criticModel: "test/text-only" }).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ModelSelectionError);
+    expect((err as ModelSelectionError).toJSON()).toMatchObject({ code: "LLM_MODEL", role: "critic", reason: "missing-capability", missing: ["vision"] });
+    expect(log).toHaveLength(0);
+    expect(fake.requests).toEqual([]);
   });
 });
 

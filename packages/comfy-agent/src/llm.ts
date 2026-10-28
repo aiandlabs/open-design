@@ -8,15 +8,14 @@
 //
 // Both return the same StructuredResult: parsed JSON, token usage, the cost
 // the response reported (if any) and a cost estimate from the per-token
-// prices `GET {base}/models` publishes.
+// prices `GET {base}/models` publishes. Prices and model selection both come
+// from the shared catalog in ./models.ts.
 
 import { LlmConfigError, LlmFormatError, LlmHttpError } from "./errors.js";
+import { AiandModelCatalog, DEFAULT_AIAND_BASE_URL, sharedModelCatalog, type ModelRequirement, type ModelRole } from "./models.js";
 
 export type ApiShape = "openai" | "anthropic";
 
-export const DEFAULT_AIAND_BASE_URL = "https://api.aiand.com/v1";
-export const DEFAULT_PLANNER_MODEL = "moonshotai/kimi-k3";
-export const DEFAULT_CRITIC_MODEL = "zai-org/glm-5.3-flash";
 export const ANTHROPIC_VERSION = "2023-06-01";
 
 export type LlmClientOptions = {
@@ -25,6 +24,12 @@ export type LlmClientOptions = {
   shape?: ApiShape;
   fetch?: typeof fetch;
   requestTimeoutMs?: number;
+  /**
+   * Model catalog for prices and model selection. Defaults to the shared
+   * catalog for this base URL and key, or a private one when `fetch` is
+   * injected (so a stubbed fetch never leaks into the shared cache).
+   */
+  catalog?: AiandModelCatalog;
 };
 
 export type ContentPart = { type: "text"; text: string } | { type: "image"; mime: string; base64: string };
@@ -64,15 +69,6 @@ export type StructuredResult<T> = {
   latencyMs: number;
 };
 
-export type ModelPricing = {
-  id: string;
-  capabilities: string[];
-  inputPer1m?: number;
-  outputPer1m?: number;
-  cachedInputPer1m?: number;
-  currency?: string;
-};
-
 export function resolveApiKey(explicit?: string, env: NodeJS.ProcessEnv = process.env): string | undefined {
   const fromArg = explicit?.trim();
   if (fromArg) return fromArg;
@@ -86,7 +82,7 @@ export class AiandClient {
   private readonly apiKey: string;
   private readonly fetchImpl: typeof fetch;
   private readonly requestTimeoutMs: number;
-  private modelsCache: Promise<Map<string, ModelPricing>> | null = null;
+  readonly catalog: AiandModelCatalog;
 
   constructor(options: LlmClientOptions = {}) {
     const apiKey = resolveApiKey(options.apiKey);
@@ -96,6 +92,11 @@ export class AiandClient {
     this.shape = options.shape ?? "openai";
     this.fetchImpl = options.fetch ?? globalThis.fetch.bind(globalThis);
     this.requestTimeoutMs = options.requestTimeoutMs ?? 180_000;
+    this.catalog =
+      options.catalog ??
+      (options.fetch
+        ? new AiandModelCatalog({ baseUrl: this.baseUrl, apiKey, fetch: options.fetch })
+        : sharedModelCatalog({ baseUrl: this.baseUrl, apiKey }));
   }
 
   private headers(shape: ApiShape): Record<string, string> {
@@ -104,37 +105,9 @@ export class AiandClient {
       : { authorization: `Bearer ${this.apiKey}`, "content-type": "application/json" };
   }
 
-  /** `GET /models`, cached. Includes per-token prices used for cost estimates. */
-  listModels(): Promise<Map<string, ModelPricing>> {
-    if (!this.modelsCache) {
-      const pending = (async () => {
-        const url = `${this.baseUrl}/models`;
-        const res = await this.fetchImpl(url, { headers: this.headers("openai"), signal: AbortSignal.timeout(this.requestTimeoutMs) });
-        const text = await res.text();
-        if (!res.ok) throw new LlmHttpError(url, res.status, text);
-        const body = JSON.parse(text) as { data?: Record<string, unknown>[] };
-        const map = new Map<string, ModelPricing>();
-        for (const m of body.data ?? []) {
-          const id = String(m.id ?? "");
-          if (!id) continue;
-          const price = (k: string) => (m[k] === undefined || m[k] === null ? undefined : Number(m[k]));
-          map.set(id, {
-            id,
-            capabilities: Array.isArray(m.capabilities) ? m.capabilities.map(String) : [],
-            ...(price("input_per_1m") === undefined ? {} : { inputPer1m: price("input_per_1m")! }),
-            ...(price("output_per_1m") === undefined ? {} : { outputPer1m: price("output_per_1m")! }),
-            ...(price("cached_input_per_1m") === undefined ? {} : { cachedInputPer1m: price("cached_input_per_1m")! }),
-            ...(typeof m.currency === "string" ? { currency: m.currency } : {}),
-          });
-        }
-        return map;
-      })();
-      this.modelsCache = pending;
-      pending.catch(() => {
-        if (this.modelsCache === pending) this.modelsCache = null;
-      });
-    }
-    return this.modelsCache;
+  /** The model for a role: the configured id after validation, or a pick from the catalog. */
+  resolveModel(role: ModelRole | ModelRequirement, configured?: string | null): Promise<string> {
+    return this.catalog.resolve(role, configured);
   }
 
   async structured<T>(req: StructuredRequest, shape: ApiShape = this.shape): Promise<StructuredResult<T>> {
@@ -176,7 +149,7 @@ export class AiandClient {
   }
 
   async estimateCost(model: string, usage: TokenUsage): Promise<number | undefined> {
-    const pricing = (await this.listModels()).get(model);
+    const pricing = await this.catalog.get(model);
     if (!pricing || pricing.inputPer1m === undefined || pricing.outputPer1m === undefined) return undefined;
     const cached = usage.cachedInputTokens ?? 0;
     const uncached = Math.max(0, usage.inputTokens - cached);

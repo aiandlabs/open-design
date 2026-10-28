@@ -10,8 +10,10 @@
 // Provider config (Settings → Media providers → ComfyUI, media-config.json):
 //   baseUrl  ComfyUI server URL (default http://127.0.0.1:8188)
 //   apiKey   ai& API key for comfyui-agent (env AIAND_API_KEY also works)
-//   model    planner/critic/API shape, e.g.
-//            "planner=moonshotai/kimi-k3, critic=zai-org/glm-5.3-flash, shape=openai"
+//   model    planner/critic/API shape, in the form
+//            "planner=<model id>, critic=<model id>, shape=openai|anthropic".
+//            A role left out is picked from the ai& model list
+//            (GET /v1/models) by capability; a role given is checked there.
 //
 // Bytes are returned to generateMedia like every other renderer. The trace
 // (and the graph that ran) is written next to the asset as
@@ -128,7 +130,7 @@ export function toMediaError(err: unknown): Error {
     e.status =
       err.code === 'COMFY_CONNECTION' ? 503
         : err.code === 'COMFY_TIMEOUT' ? 504
-          : err.code === 'LLM_CONFIG' ? 400
+          : err.code === 'LLM_CONFIG' || err.code === 'LLM_MODEL' ? 400
             : 422;
     if (err.code === 'COMFY_TIMEOUT' || err.code === 'COMFY_OUTPUT_FETCH') e.retryable = true;
     return e;
@@ -218,8 +220,8 @@ export async function renderComfyUI(input: {
       {
         comfy,
         llm,
-        plannerModel: cfg.plannerModel,
-        criticModel: cfg.criticModel,
+        ...(cfg.plannerModel ? { plannerModel: cfg.plannerModel } : {}),
+        ...(cfg.criticModel ? { criticModel: cfg.criticModel } : {}),
         ...(cfg.plannerReasoningEffort ? { plannerReasoningEffort: cfg.plannerReasoningEffort } : { plannerReasoningEffort: 'low' }),
         ...(cfg.criticReasoningEffort ? { criticReasoningEffort: cfg.criticReasoningEffort } : { criticReasoningEffort: 'low' }),
         workDir,

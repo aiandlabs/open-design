@@ -108,7 +108,11 @@ beforeEach(async () => {
         return;
       }
       if (url.pathname === '/v1/models') {
-        return json(res, 200, { data: [{ id: 'test/planner', input_per_1m: '1', output_per_1m: '2' }, { id: 'test/critic', input_per_1m: '1', output_per_1m: '2' }] });
+        return json(res, 200, { data: [
+          { id: 'test/text', capabilities: ['chat', 'tool_calling'], input_per_1m: '1', output_per_1m: '2' },
+          { id: 'test/planner', capabilities: ['vision', 'tool_calling'], input_per_1m: '1', output_per_1m: '2' },
+          { id: 'test/critic', capabilities: ['vision', 'tool_calling'], input_per_1m: '1', output_per_1m: '2' },
+        ] });
       }
       if (url.pathname === '/v1/chat/completions') {
         const req = JSON.parse(body) as { model: string; tool_choice: { function: { name: string } } };
@@ -233,6 +237,26 @@ describe('generateMedia with comfyui-agent', () => {
     expect(trace.rounds[0].imagePath).toBe('.comfy-agent/agent/round-1.png');
     expect(existsSync(path.join(dir, trace.rounds[0].imagePath))).toBe(true);
     expect(decodePng(await readFile(path.join(dir, 'agent.png')))).toMatchObject({ width: 256, height: 256 });
+  });
+
+  it('picks the models from the ai& list when the model field is blank', async () => {
+    await writeMediaConfig({ baseUrl, apiKey: 'test-aiand-key' });
+    await generateMedia({
+      projectRoot, projectsRoot, projectId: 'p1', surface: 'image', model: 'comfyui-agent',
+      prompt: 'a red square', output: 'auto.png', comfy: { width: 256, height: 256, maxRounds: 1 },
+    });
+    // No preferred id is listed here, so both roles take the first model with vision + tool calling.
+    expect(llmCalls.map((c) => c.model)).toEqual(['test/planner', 'test/planner']);
+  });
+
+  it('refuses a configured critic without vision as a 400, before ComfyUI runs', async () => {
+    await writeMediaConfig({ baseUrl, apiKey: 'test-aiand-key', model: 'planner=test/planner, critic=test/text' });
+    const err = await generateMedia({ projectRoot, projectsRoot, projectId: 'p1', surface: 'image', model: 'comfyui-agent', prompt: 'x' }).catch((e: unknown) => e);
+    expect(err).toMatchObject({ code: 'LLM_MODEL', status: 400 });
+    expect((err as Error).message).toContain('critic model "test/text" lacks vision');
+    expect((err as Error).message).toContain('valid critic models: test/planner, test/critic');
+    expect(llmCalls).toHaveLength(0);
+    expect(prompts).toHaveLength(0);
   });
 
   it('asks for the ai& key in Settings when none is configured', async () => {

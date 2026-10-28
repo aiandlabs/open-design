@@ -8,6 +8,7 @@ export * from "./graphs.js";
 export * from "./edits.js";
 export * from "./image.js";
 export * from "./llm.js";
+export * from "./models.js";
 export * from "./config.js";
 export {
   generateAsset,

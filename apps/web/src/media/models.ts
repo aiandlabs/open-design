@@ -171,7 +171,7 @@ export const MEDIA_PROVIDERS: MediaProvider[] = [
     defaultBaseUrl: 'http://127.0.0.1:8188',
     docsUrl: 'https://docs.comfy.org/development/core-concepts/workflow',
     supportsCustomModel: true,
-    customModelPlaceholder: 'planner=moonshotai/kimi-k3, critic=zai-org/glm-5.3-flash, shape=openai',
+    customModelPlaceholder: 'planner=<model id>, critic=<model id>, shape=openai|anthropic',
   },
   {
     id: 'bfl',

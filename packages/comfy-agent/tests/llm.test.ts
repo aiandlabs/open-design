@@ -150,7 +150,11 @@ describe("configuration", () => {
   it("resolves explicit config over env over defaults", () => {
     const cfg = resolveComfyAgentConfig({ plannerModel: "explicit/p" }, { COMFYUI_URL: "http://gpu.local:8188/", COMFY_AGENT_CRITIC_MODEL: "env/c", COMFY_AGENT_API_SHAPE: "anthropic", AIAND_API_KEY: "e" });
     expect(cfg).toMatchObject({ comfyUrl: "http://gpu.local:8188", plannerModel: "explicit/p", criticModel: "env/c", apiShape: "anthropic", aiandApiKey: "e" });
-    expect(resolveComfyAgentConfig({}, {})).toMatchObject({ comfyUrl: "http://127.0.0.1:8188", plannerModel: "moonshotai/kimi-k3", criticModel: "zai-org/glm-5.3-flash", apiShape: "openai" });
+    const defaults = resolveComfyAgentConfig({}, {});
+    expect(defaults).toMatchObject({ comfyUrl: "http://127.0.0.1:8188", apiShape: "openai" });
+    // No literal default: unset models are picked from the live catalog later.
+    expect(defaults.plannerModel).toBeUndefined();
+    expect(defaults.criticModel).toBeUndefined();
   });
 
   it("parses loose JSON", () => {
