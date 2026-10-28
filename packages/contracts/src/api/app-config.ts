@@ -1,4 +1,5 @@
 import type { OdNextRolloutMode } from './strategy-rollout.js';
+import type { VisualCheckPrefs } from './visual-check.js';
 
 export interface AgentModelPrefs {
   model?: string;
@@ -93,6 +94,12 @@ export interface AppConfigPrefs {
    * most-recent-first and capped by the daemon.
    */
   recentLinkedDirs?: string[];
+  /**
+   * Vision-model visual check. `rounds` is how many `od visual-check` runs
+   * the agent may make per task (0, the default, keeps the one-render rule);
+   * `model` is the ai& vision model the check calls.
+   */
+  visualCheck?: VisualCheckPrefs | null;
 }
 
 export interface AppConfigResponse {
