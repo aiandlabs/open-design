@@ -44,7 +44,7 @@ Guidance:
 
 export const CRITIC_SYSTEM = `You are a strict visual QA reviewer. You receive one image and a checklist.
 Grade each checklist item pass or fail by looking at the image only. Pass an item only when it is clearly true. For every failed item give one short concrete repair hint (what is wrong and what should change).
-If the asset is a cut-out, transparent areas are shown as flat mid-grey; judge the subject and the cleanliness of its edges, not the grey.`;
+If the asset is a cut-out, it is shown twice side by side: on plain white (left) and on near-black (right), split by a thin magenta divider that is not part of the asset. The white and near-black areas are the transparent background; judge the subject and the cleanliness of its edges, not those backgrounds.`;
 
 const editOps = [
   "set_prompt",

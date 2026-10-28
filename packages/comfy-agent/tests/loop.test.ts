@@ -189,6 +189,27 @@ describe("generateAsset", () => {
     expect(String(sent.neg!.inputs.text)).toContain("gradient background");
   });
 
+  it("describes the cut-out view the critic actually receives in both system and user text", async () => {
+    const { comfy, workDir } = await setup({ render: () => encodePng(discOnGreen(768, 768)) });
+    const { llm, log } = stubLlm({
+      plan: { ...PLAN, checklist: [{ id: "subject", text: "One red disc" }], key_color: "#00ff00" },
+      critic: () => ({ items: [{ id: "subject", pass: true }] }),
+    });
+    await generateAsset(
+      { prompt: "a red disc icon", width: 256, height: 256, transparent: true },
+      { comfy, llm, plannerModel: "test/planner", criticModel: "test/critic", workDir },
+    );
+    const critic = log.find((l) => l.tool === CRITIC_TOOL)!.body;
+    const messages = critic.messages as { role: string; content: unknown }[];
+    const system = String(messages.find((m) => m.role === "system")!.content);
+    const user = JSON.stringify(messages.find((m) => m.role === "user")!.content);
+    // The image is cutoutSheet(): white panel and near-black panel. Nothing is shown on grey.
+    expect(user).toContain("on white (left) and on near-black (right)");
+    expect(system).not.toMatch(/grey|gray/i);
+    expect(system).toMatch(/white/);
+    expect(system).toMatch(/near-black/);
+  });
+
   it("treats set_seed without a value as a request for a new seed", async () => {
     const { fake, comfy, workDir } = await setup({ render: () => lanternPng(768, 768) });
     const { llm } = stubLlm({
