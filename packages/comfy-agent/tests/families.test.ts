@@ -62,8 +62,8 @@ describe("model families", () => {
   it("finds every installed split-loader set with the files the real server lists", () => {
     const sets = summarizeCapabilities(info).modelSets;
     expect(sets.map((s) => [s.family, s.model, s.textEncoder, s.vae, s.edit])).toEqual([
-      ["zimage", "z_image_turbo_int8_convrot.safetensors", "qwen_3_4b.safetensors", "ae.safetensors", false],
       ["flux2_klein", "flux-2-klein-4b.safetensors", "qwen_3_4b.safetensors", "flux2-vae.safetensors", true],
+      ["zimage", "z_image_turbo_int8_convrot.safetensors", "qwen_3_4b.safetensors", "ae.safetensors", false],
       ["ming", "ming_image_0.1_design_int8_convrot.safetensors", "ming_image_0.1_ling_mini_2.0_w4a8.safetensors", "ming_image_vae_bf16.safetensors", true],
     ]);
   });

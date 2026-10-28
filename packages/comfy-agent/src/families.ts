@@ -56,22 +56,6 @@ const CUSTOM_SAMPLING = ["RandomNoise", "KSamplerSelect", "SamplerCustomAdvanced
  */
 export const FAMILY_SPECS: readonly FamilySpec[] = [
   {
-    family: "zimage",
-    label: "Z-Image-Turbo",
-    // image_z_image_turbo.json: UNETLoader, CLIPLoader(lumina2), ModelSamplingAuraFlow shift 3,
-    // ConditioningZeroOut negative, EmptySD3LatentImage 1024², KSampler 8 steps cfg 1 res_multistep/simple.
-    source: "https://github.com/Comfy-Org/workflow_templates/blob/main/templates/image_z_image_turbo.json",
-    unet: /^z[-_]image[-_]turbo.*\.(safetensors|gguf)$/i,
-    textEncoder: /^qwen_3_4b(?!.*(fp4|fp8)).*\.safetensors$/i,
-    clipType: "lumina2",
-    vae: /^ae\.safetensors$/i,
-    nodes: [...LOADERS, "ModelSamplingAuraFlow", "CLIPTextEncode", "ConditioningZeroOut", "EmptySD3LatentImage", "KSampler"],
-    distilled: true,
-    usesNegative: false,
-    sampling: { steps: 8, cfg: 1, sampler: "res_multistep", scheduler: "simple" },
-    promptStyle: "sentences",
-  },
-  {
     family: "flux2_klein",
     label: "FLUX.2 [klein] 4B",
     // image_flux2_klein_text_to_image.json (distilled branch) and image_flux2_klein_image_edit_4b_distilled.json:
@@ -88,6 +72,22 @@ export const FAMILY_SPECS: readonly FamilySpec[] = [
     distilled: true,
     usesNegative: false,
     sampling: { steps: 4, cfg: 1, sampler: "euler", scheduler: "simple" },
+    promptStyle: "sentences",
+  },
+  {
+    family: "zimage",
+    label: "Z-Image-Turbo",
+    // image_z_image_turbo.json: UNETLoader, CLIPLoader(lumina2), ModelSamplingAuraFlow shift 3,
+    // ConditioningZeroOut negative, EmptySD3LatentImage 1024², KSampler 8 steps cfg 1 res_multistep/simple.
+    source: "https://github.com/Comfy-Org/workflow_templates/blob/main/templates/image_z_image_turbo.json",
+    unet: /^z[-_]image[-_]turbo.*\.(safetensors|gguf)$/i,
+    textEncoder: /^qwen_3_4b(?!.*(fp4|fp8)).*\.safetensors$/i,
+    clipType: "lumina2",
+    vae: /^ae\.safetensors$/i,
+    nodes: [...LOADERS, "ModelSamplingAuraFlow", "CLIPTextEncode", "ConditioningZeroOut", "EmptySD3LatentImage", "KSampler"],
+    distilled: true,
+    usesNegative: false,
+    sampling: { steps: 8, cfg: 1, sampler: "res_multistep", scheduler: "simple" },
     promptStyle: "sentences",
   },
   {
