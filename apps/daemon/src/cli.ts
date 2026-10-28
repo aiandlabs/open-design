@@ -93,12 +93,15 @@ const MEDIA_GENERATE_STRING_FLAGS = new Set([
   'max-rounds',
   'size',
   'negative',
+  'kind',
+  'set',
 ]);
 const MEDIA_GENERATE_BOOLEAN_FLAGS = new Set([
   'help',
   'h',
   'loop',
   'transparent',
+  'no-references',
 ]);
 const MEDIA_SCAFFOLD_STRING_FLAGS = new Set([
   'project',
@@ -2008,7 +2011,7 @@ async function runMedia(args) {
     printMediaHelp();
     return;
   }
-  if (sub !== 'generate' && sub !== 'wait' && sub !== 'scaffold' && sub !== 'stock-search' && sub !== 'models' && sub !== 'policy') {
+  if (sub !== 'generate' && sub !== 'wait' && sub !== 'scaffold' && sub !== 'stock-search' && sub !== 'models' && sub !== 'policy' && sub !== 'assets' && sub !== 'review') {
     console.error(`unknown subcommand: od media ${sub}`);
     printMediaHelp();
     process.exit(1);
@@ -2017,6 +2020,8 @@ async function runMedia(args) {
   const idx = args.indexOf(sub);
   const subArgs = [...args.slice(0, idx), ...args.slice(idx + 1)];
   if (sub === 'policy') return runMediaPolicy(subArgs);
+  if (sub === 'assets') return runMediaAssets(subArgs, 'list');
+  if (sub === 'review') return runMediaAssets(subArgs, 'review');
   if (sub === 'models') {
     const flags = parseFlags(subArgs, { string: ['daemon-url', 'project', 'workspace', 'workspace-member'], boolean: ['json', 'cloud', 'all', 'help', 'h'] });
     if (flags.help || flags.h) { printMediaHelp(); return; }
@@ -2680,8 +2685,9 @@ function repeatableFlagValues(argv, name) {
 // --transparent) travel to the daemon as `body.comfy`. They are rejected for
 // other models so a typo'd model id fails loudly instead of ignoring them.
 async function comfyOptionsFromFlags(flags) {
-  const used = ['workflow', 'max-rounds', 'size', 'negative'].filter((k) => flags[k] != null);
+  const used = ['workflow', 'max-rounds', 'size', 'negative', 'kind', 'set'].filter((k) => flags[k] != null);
   if (flags.transparent === true) used.push('transparent');
+  if (flags['no-references'] === true) used.push('no-references');
   if (used.length === 0) return null;
   if (!String(flags.model || '').startsWith('comfyui-')) {
     console.error(`--${used.join(', --')} only apply to comfyui-agent / comfyui-workflow`);
@@ -2722,7 +2728,92 @@ async function comfyOptionsFromFlags(flags) {
   }
   if (flags.negative != null) comfy.negative = String(flags.negative);
   if (flags.transparent === true) comfy.transparent = true;
+  if (flags.kind != null) {
+    if (flags.kind !== 'icon') {
+      console.error('--kind must be "icon"');
+      process.exit(2);
+    }
+    comfy.kind = 'icon';
+  }
+  if (flags.set != null) {
+    const set = String(flags.set).trim();
+    if (!set || set.length > 64) {
+      console.error('--set must be a name of 1-64 characters');
+      process.exit(2);
+    }
+    comfy.set = set;
+  }
+  if (flags['no-references'] === true) comfy.references = false;
   return comfy;
+}
+
+// `od media assets` / `od media review` — images the ComfyUI provider made in
+// a project and the user's review of each. Same endpoints as the asset review
+// control in the file viewer: GET /api/projects/:id/media/assets and
+// PUT /api/projects/:id/media/assets/review. A rejected (or deleted) icon is
+// never used as a style reference for later icons.
+async function runMediaAssets(rawArgs, mode) {
+  let flags;
+  try {
+    flags = parseFlags(rawArgs, {
+      string: ['daemon-url', 'project', 'workspace', 'workspace-member'],
+      boolean: ['json', 'accept', 'reject', 'help', 'h'],
+    });
+  } catch (err) {
+    console.error(err.message);
+    printMediaHelp();
+    process.exit(2);
+  }
+  if (flags.help || flags.h) {
+    printMediaHelp();
+    return;
+  }
+  const projectId = flags.project || process.env.OD_PROJECT_ID;
+  if (!projectId) {
+    console.error('project id required. Pass --project <id> or set OD_PROJECT_ID.');
+    process.exit(2);
+  }
+  const base = `${await cliDaemonBaseUrl(flags)}/api/projects/${encodeURIComponent(projectId)}/media/assets`;
+  const headers = { 'content-type': 'application/json', ...(workspaceHeadersFromExplicitFlags(flags) ?? {}) };
+  let resp;
+  if (mode === 'list') {
+    try {
+      resp = await fetch(base, { headers });
+    } catch (err) {
+      surfaceFetchError(err, base);
+      process.exit(3);
+    }
+  } else {
+    const file = positionalArgs(rawArgs, new Set(['daemon-url', 'project', 'workspace', 'workspace-member']))[0];
+    if (!file || flags.accept === flags.reject) {
+      console.error('usage: od media review <project-relative image path> --accept | --reject [--project <id>] [--json]');
+      process.exit(2);
+    }
+    try {
+      resp = await fetch(`${base}/review`, {
+        method: 'PUT',
+        headers,
+        body: JSON.stringify({ path: file, state: flags.reject ? 'rejected' : 'accepted', via: 'cli' }),
+      });
+    } catch (err) {
+      surfaceFetchError(err, base);
+      process.exit(3);
+    }
+  }
+  const text = await resp.text();
+  if (!resp.ok) {
+    console.error(`daemon ${resp.status}: ${text}`);
+    process.exit(resp.status === 404 ? 4 : 1);
+  }
+  const body = JSON.parse(text);
+  if (flags.json) {
+    process.stdout.write(`${JSON.stringify(body)}\n`);
+    return;
+  }
+  const rows = mode === 'list' ? body.assets : [body.asset];
+  for (const a of rows) {
+    console.log(`${a.review.state.padEnd(8)} ${a.path}${a.kind ? ` [${a.kind}${a.set ? `: ${a.set}` : ''}]` : ''}${a.review.reason === 'deleted' ? ' (file deleted)' : ''}`);
+  }
 }
 
 async function cliDaemonUrl(flags) {
@@ -2737,6 +2828,8 @@ function printMediaHelp() {
   console.log(`Usage: od media models [--all] [--cloud --project <id>] --json
        od media policy [--local-only on|off] [--json]
        od media scaffold --composition-dir .hyperframes-cache/<id> [opts]
+       od media assets [--project <id>] [--json]
+       od media review <image path> --accept | --reject [--project <id>] [--json]
        od media generate --surface <image|video|audio> --model <id> [opts]
        od media stock-search --slots '<json>' [opts]
        "$OD_NODE_BIN" "$OD_BIN" media generate --surface <image|video|audio> --model <id> [opts]
@@ -2802,7 +2895,15 @@ provider must be configured in Settings → Media providers):
                             is generated at the checkpoint's native size and
                             cropped/resized to this. Default: from --aspect.
   --transparent             comfyui-agent: cut-out PNG with an alpha background
-                            (generated on a flat key colour, keyed in code).
+                            (rendered on a plain backdrop and cut out with the
+                            matting model; chroma keying when none is installed).
+  --kind icon               comfyui-agent: an illustrative icon (3D, mascot, glossy,
+                            brand-styled). Uses the closest emoji / Material Symbol
+                            for shape and the project's accepted icons for style.
+                            Plain UI icons should use an SVG icon set instead.
+  --set "<name>"            comfyui-agent: icon set this icon belongs to; accepted
+                            icons of the same set are its style references.
+  --no-references           comfyui-agent: no shape or style references.
   --negative "<text>"       Things the image must not contain.
   --max-rounds <n>          comfyui-agent: generate/critique/repair rounds (1-10,
                             default 3). Each round takes tens of seconds locally.
@@ -2812,7 +2913,13 @@ provider must be configured in Settings → Media providers):
                             uses it as the starting graph. Without it, the default
                             text-to-image graph is used.
   comfyui-agent writes <output>.trace.json beside the image (per-round graph,
-  checks, critic grades, edits, tokens, cost, timing).
+  checks, critic grades, edits, references and their sources, tokens, cost,
+  timing).
+
+Generated assets (od media assets / od media review):
+  Every ComfyUI image in the project is "accepted" until someone rejects it
+  (od media review <path> --reject, or Reject in the file viewer) or deletes
+  its file. Rejected icons are never style references for later icons.
 
 Output: a single line of JSON: {"file": { name, size, kind, mime, ... }}
   Slow models return {"taskId": "...", "nextSince": n} with exit 0 instead —

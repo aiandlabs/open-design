@@ -42,6 +42,7 @@ export * from './api/handoff.js';
 export * from './api/library.js';
 export * from './api/live-artifacts.js';
 export * from './api/media.js';
+export * from './api/generated-assets.js';
 export * from './api/media-local-policy.js';
 export * from './api/media-stock.js';
 export * from './api/visual-check.js';

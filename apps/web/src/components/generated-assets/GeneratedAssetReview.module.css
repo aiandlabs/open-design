@@ -1,0 +1,28 @@
+.review {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.accepted,
+.rejected {
+  font-size: 12px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+}
+
+.accepted {
+  color: var(--text-muted);
+}
+
+.rejected {
+  color: var(--red);
+  background: var(--red-bg);
+  border-color: var(--red-border);
+}
+
+.error {
+  font-size: 12px;
+  color: var(--red);
+}

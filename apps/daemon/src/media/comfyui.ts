@@ -24,11 +24,13 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
 import { SETTINGS_MEDIA_PROVIDERS_PATH } from '@open-design/contracts';
+import { loadSetReferences } from './generated-assets.js';
 import {
   AiandClient,
   ComfyAgentError,
   ComfyClient,
   LlmHttpError,
+  ReferenceLibrary,
   generateAsset,
   parseModelSettings,
   resolveComfyAgentConfig,
@@ -49,7 +51,16 @@ export type ComfyMediaOptions = {
   transparent?: boolean;
   negative?: string;
   seed?: number;
+  /** `icon`: use shape references (closest emoji / Material Symbols) and the project's accepted icons as style references. */
+  kind?: 'icon';
+  /** Icon set name: accepted icons with the same set name are preferred as style references. */
+  set?: string;
+  /** false: no shape or set references for this asset. */
+  references?: boolean;
 };
+
+/** Most accepted icons passed to one generation as style references. */
+const MAX_SET_REFERENCES = 3;
 
 type Credentials = { apiKey?: string; baseUrl?: string; model?: string };
 
@@ -75,6 +86,9 @@ export function parseComfyMediaOptions(body: unknown): ComfyMediaOptions | undef
   if (typeof r.negative === 'string' && r.negative.trim()) out.negative = r.negative.trim();
   const seed = int(r.seed, 0, 2 ** 32 - 1);
   if (seed !== undefined) out.seed = seed;
+  if (r.kind === 'icon') out.kind = 'icon';
+  if (typeof r.set === 'string' && r.set.trim() && r.set.trim().length <= 64) out.set = r.set.trim();
+  if (r.references === false) out.references = false;
   return Object.keys(out).length > 0 ? out : undefined;
 }
 
@@ -147,6 +161,8 @@ export async function renderComfyUI(input: {
   outputName: string;
   credentials: Credentials;
   options?: ComfyMediaOptions | undefined;
+  /** Cache for fetched reference indexes and images, under the daemon data root. */
+  referenceCacheDir?: string | undefined;
   requestInit?: Pick<RequestInit, 'dispatcher'>;
   onProgress?: ((message: string) => void) | undefined;
 }): Promise<{ bytes: Buffer; providerNote: string; suggestedExt: string }> {
@@ -208,6 +224,17 @@ export async function renderComfyUI(input: {
     });
     const workDir = path.join(input.projectDir, '.comfy-agent', path.basename(stem));
     const baseGraph = opts.workflow !== undefined ? toApiWorkflow(opts.workflow, await comfy.getObjectInfo()) : undefined;
+    // Icons: the closest emoji / Material Symbols for shape, and the
+    // project's accepted icons (same set first) for style. A rejected or
+    // deleted icon never steers a later one.
+    const assetPath = input.outputName.replace(/\.[^.]+$/, '.png');
+    const useReferences = opts.references !== false && opts.kind === 'icon';
+    const references = useReferences
+      ? {
+          ...(input.referenceCacheDir ? { library: new ReferenceLibrary({ cacheDir: input.referenceCacheDir, fetch: fetchWithInit }) } : {}),
+          set: await loadSetReferences(input.projectDir, { ...(opts.set ? { set: opts.set } : {}), exclude: assetPath }, MAX_SET_REFERENCES),
+        }
+      : undefined;
     const result = await generateAsset(
       {
         prompt: input.prompt,
@@ -216,6 +243,7 @@ export async function renderComfyUI(input: {
         ...(opts.transparent ? { transparent: true } : {}),
         ...(opts.negative ? { negative: opts.negative } : {}),
         ...(opts.seed !== undefined ? { seed: opts.seed } : {}),
+        ...(opts.kind ? { kind: opts.kind } : {}),
       },
       {
         comfy,
@@ -228,10 +256,11 @@ export async function renderComfyUI(input: {
         tracePath: rel,
         limits: { maxRounds: opts.maxRounds ?? 3 },
         ...(baseGraph ? { baseGraph } : {}),
+        ...(references ? { references } : {}),
         ...(input.onProgress ? { onProgress: input.onProgress } : {}),
       },
     );
-    const trace = { ...result.trace, asset: input.outputName.replace(/\.[^.]+$/, '.png') };
+    const trace = { ...result.trace, asset: assetPath, ...(opts.set ? { set: opts.set } : {}) };
     await writeFile(tracePath, JSON.stringify(trace, null, 2));
     const best = result.trace.best;
     const cost = result.trace.totals.costUsd;

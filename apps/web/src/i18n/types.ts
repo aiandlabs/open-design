@@ -4010,6 +4010,12 @@ export interface Dict {
   'fileViewer.download': string;
   'fileViewer.open': string;
   'fileViewer.imageMeta': string;
+  'generatedAsset.accepted': string;
+  'generatedAsset.rejected': string;
+  'generatedAsset.accept': string;
+  'generatedAsset.reject': string;
+  'generatedAsset.hint': string;
+  'generatedAsset.error': string;
   'fileViewer.reactMeta': string;
   'fileViewer.sketchMeta': string;
   'fileViewer.markdownStreamingMeta': string;

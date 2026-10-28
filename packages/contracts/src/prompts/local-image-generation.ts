@@ -20,6 +20,16 @@ export interface LocalImageGenerationPromptInput {
 const OD = '"$OD_NODE_BIN" "$OD_BIN"';
 
 /**
+ * Plain UI icons come from pinned SVG icon sets that are placed in the design
+ * as they are, so both licences permit commercial use: Material Symbols
+ * (Apache-2.0) and Lucide (ISC).
+ */
+const UI_ICON_RULE =
+  '- Plain UI icons (navigation, actions, status, form controls, small feature bullets) are not images to generate. ' +
+  'Inline an SVG from Material Symbols (`https://cdn.jsdelivr.net/npm/@material-symbols/svg-400@0.48.2/outlined/<name>.svg`, add `-fill` for the filled form) ' +
+  'or Lucide (`https://cdn.jsdelivr.net/npm/lucide-static@1.63.0/icons/<name>.svg`), use one set per design, and colour it with CSS (`fill: currentColor` for Material Symbols, `stroke: currentColor` for Lucide).';
+
+/**
  * The one source of the image-generation routing rule for the local ComfyUI
  * provider and the local-only policy.
  *
@@ -46,6 +56,7 @@ export function renderLocalImageGenerationRule(
       'Image generation: not available in this run.',
       'The user turned on "Local image generation only" in Settings, and no local ComfyUI server is configured. The daemon refuses every hosted image and video model (`vela/*`, OpenAI, Nano Banana, fal, OpenRouter, and the rest of the media catalogue), so do not run `media generate` for images or generative video (even when the project metadata or run defaults name a model), do not try other model ids, and do not ask the user for provider API keys.',
       `For each image the task needs, use a stock photo from \`${OD} media stock-search\`, an asset the user supplied, or a designed placeholder (CSS or SVG shapes, gradients, type) that keeps the planned size and position.`,
+      UI_ICON_RULE,
       `In the reply, say in one sentence that generated images were not available, so the design uses stock photos or placeholders, and that ComfyUI can be set up under ${SETTINGS_MEDIA_PROVIDERS_PATH}.`,
     ].join('\n');
   }
@@ -59,11 +70,13 @@ export function renderLocalImageGenerationRule(
       '```bash',
       `${OD} media generate --project "$OD_PROJECT_ID" --surface image --model comfyui-agent \\`,
       '  --output <planned-file>.png --prompt "<plain description of the asset>" \\',
-      '  [--size <W>x<H>] [--transparent] [--negative "<things that must not appear>"] [--max-rounds <1-3>]',
+      '  [--size <W>x<H>] [--transparent] [--negative "<things that must not appear>"] [--max-rounds <1-3>] \\',
+      '  [--kind icon --set "<set name>"]',
       '```',
       '- Put a plain description of the asset in `--prompt`; comfyui-agent writes the Stable Diffusion prompt itself.',
       '- `--size <W>x<H>` sets an exact pixel size (for example `--size 1600x900` for a hero). Without it, `--aspect 1:1|16:9|9:16|4:3|3:4` picks the size.',
       '- `--transparent` makes a cut-out on a transparent background (icons, stickers, product cut-outs).',
+      '- Illustrative icons (3D, mascot, glossy app icons, a brand-styled icon set) are generated with `--kind icon --transparent`. Give every icon of one set the same `--set "<set name>"` and the same style words in `--prompt`: icons the user has kept in that set guide the style of the next one, and the closest emoji or symbol guides the shape.',
       '- `--negative "<text>"` names things that must not appear.',
       '- comfyui-agent compares each result with the request and edits the graph to fix what is wrong, for up to `--max-rounds` rounds (default 3; use 1 or 2 for a quick draft).',
       '- Use `--model comfyui-workflow --workflow <file.json>` only when the user gives a ComfyUI workflow, or for one plain generation with no repair rounds.',
@@ -81,6 +94,7 @@ export function renderLocalImageGenerationRule(
     );
   }
   lines.push(
+    UI_ICON_RULE,
     `- The server is shared and jobs queue, so a round can take a minute or more. When the command prints a \`taskId\`, run \`${OD} media wait <taskId> --since <n>\` until it exits 0 (done) or 5 (failed); exit 2 means it is still running.`,
     '- The command also writes `<name>.trace.json` beside the image. Leave it in the project; do not read it back or describe it.',
   );

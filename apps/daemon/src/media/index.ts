@@ -362,6 +362,11 @@ export async function generateMedia(args: {
   desktopFrameRenderer?: DesktopFrameRenderer | null;
   /** ComfyUI-only options (workflow graph, size, transparency, round limit). */
   comfy?: ComfyMediaOptions;
+  /**
+   * ComfyUI icon references: cache for fetched emoji / icon indexes and
+   * images. Derived by the caller from the daemon data root.
+   */
+  referenceCacheDir?: string;
   workspaceId?: string;
   /**
    * Settings → "Local image generation only", as the caller resolved it.
@@ -829,6 +834,7 @@ export async function generateMedia(args: {
         outputName: safeOut,
         credentials,
         options: args.comfy,
+        referenceCacheDir: args.referenceCacheDir,
         requestInit: ctx.requestInit,
         onProgress: args.onProgress,
       });

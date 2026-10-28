@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import path from 'node:path';
 import { parseStockSearchRequest, type StockSearchRequest } from '@open-design/contracts';
 import { resolveProjectWritePath, validateProjectPath } from '../projects.js';
 import { stockSearch, StockSearchServiceError, StockSearchInputError } from '../media/stock-search.js';
@@ -52,6 +53,12 @@ import { associateLateRunProducedFile } from '../runtimes/run-produced-files.js'
 import { scaffoldHyperFramesComposition } from '../media/hyperframes-scaffold.js';
 import { assignMediaTaskBatches } from '../media/task-batches.js';
 import { mediaTaskErrorFromFailure } from '../media/task-error.js';
+import { GeneratedAssetNotFoundError, listGeneratedAssets, setGeneratedAssetReview } from '../media/generated-assets.js';
+import {
+  parseGeneratedAssetReviewRequest,
+  type GeneratedAssetReviewResponse,
+  type GeneratedAssetsResponse,
+} from '@open-design/contracts';
 import { normalizePersistedAutomationWorkspaceScope } from '../automations/workspace-scope.js';
 
 const LONG_MEDIA_PROXY_TIMEOUT_MS = 10 * 60 * 1000;
@@ -503,6 +510,7 @@ export function registerMediaRoutes(app: Express, ctx: RegisterMediaRoutesDeps) 
           : undefined,
         compositionDir: req.body?.compositionDir,
         comfy: parseComfyMediaOptions(req.body),
+        referenceCacheDir: path.join(RUNTIME_DATA_DIR, 'reference-images'),
         image: req.body?.image,
         images: Array.isArray(req.body?.images) ? req.body.images : undefined,
         workspaceId,
@@ -1117,6 +1125,34 @@ export function registerMediaRoutes(app: Express, ctx: RegisterMediaRoutesDeps) 
 
   // Existing UI/project clients use the same execution path. Bearer callers
   // cannot downgrade to browser authority or select a different project.
+  // Generated assets and their review (accept / reject). The project folder is
+  // resolved the way generateMedia writes it, so these are the files it made.
+  app.get('/api/projects/:id/media/assets', async (req, res) => {
+    if (!isLocalSameOrigin(req, getResolvedPort())) return sendApiError(res, 403, 'FORBIDDEN', 'cross-origin request rejected');
+    const project = getProject(db, req.params.id);
+    if (!project) return sendApiError(res, 404, 'PROJECT_NOT_FOUND', 'project not found');
+    if (!await ctx.authorizeProjectRequest(req, res, project.id, { mode: 'read' })) return;
+    const body: GeneratedAssetsResponse = { assets: await listGeneratedAssets(resolveProjectDir(PROJECTS_DIR, project.id)) };
+    res.json(body);
+  });
+
+  app.put('/api/projects/:id/media/assets/review', async (req, res) => {
+    if (!isLocalSameOrigin(req, getResolvedPort())) return sendApiError(res, 403, 'FORBIDDEN', 'cross-origin request rejected');
+    const project = getProject(db, req.params.id);
+    if (!project) return sendApiError(res, 404, 'PROJECT_NOT_FOUND', 'project not found');
+    if (!await ctx.authorizeProjectRequest(req, res, project.id, { mode: 'write', capability: 'writeFiles' })) return;
+    const parsed = parseGeneratedAssetReviewRequest(req.body);
+    if (!parsed.ok) return sendApiError(res, 400, 'BAD_REQUEST', parsed.error);
+    try {
+      const asset = await setGeneratedAssetReview(resolveProjectDir(PROJECTS_DIR, project.id), parsed.value.path, parsed.value.state, parsed.value.via ?? 'api');
+      const body: GeneratedAssetReviewResponse = { asset };
+      res.json(body);
+    } catch (err) {
+      if (err instanceof GeneratedAssetNotFoundError) return sendApiError(res, 404, err.code, err.message);
+      throw err;
+    }
+  });
+
   app.post('/api/projects/:id/media/stock-search', async (req, res) => {
     if (!isLocalSameOrigin(req, getResolvedPort())) return sendApiError(res, 403, 'FORBIDDEN', 'cross-origin request rejected');
     const bearer = /^Bearer(?:\s|$)/i.test(req.get('authorization')?.trim() ?? '');

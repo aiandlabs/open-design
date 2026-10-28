@@ -105,6 +105,20 @@ describe('local image generation rule (single source)', () => {
     expect(rule).toContain('vela/*');
   });
 
+  it('routes plain UI icons to pinned SVG icon sets in every variant, and illustrative icons to --kind icon', () => {
+    for (const input of INPUTS) {
+      const rule = renderLocalImageGenerationRule(input);
+      expect(rule).toContain('@material-symbols/svg-400@0.48.2');
+      expect(rule).toContain('lucide-static@1.63.0');
+      expect(rule).toMatch(/currentColor/);
+      expect(() => assertOdNextPlanningBuildOnlyV2(rule, 'local-image-generation')).not.toThrow();
+    }
+    const agent = renderLocalImageGenerationRule({ localOnly: true, comfyuiModel: 'comfyui-agent' });
+    expect(agent).toContain('--kind icon');
+    expect(agent).toContain('--set "<set name>"');
+    expect(renderLocalImageGenerationRule({ localOnly: true, comfyuiModel: 'comfyui-workflow' })).not.toContain('--kind icon');
+  });
+
   it('does not offer comfyui-agent flags when only the workflow model can run', () => {
     const rule = renderLocalImageGenerationRule({ localOnly: true, comfyuiModel: 'comfyui-workflow' });
     expect(rule).toContain('--model comfyui-workflow');

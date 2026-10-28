@@ -268,6 +268,30 @@ describe('generateMedia with comfyui-agent', () => {
     expect(prompts).toHaveLength(0);
   });
 
+  it('generates an icon for a set with the project\'s accepted icons, and records why references were not used on this model', async () => {
+    await writeMediaConfig({ baseUrl, apiKey: 'test-aiand-key', model: 'planner=test/planner, critic=test/critic' });
+    const dir = path.join(projectsRoot, 'p1');
+    await mkdir(path.join(dir, 'icons'), { recursive: true });
+    for (const [name, review] of [['leaf', undefined], ['rocket', { state: 'rejected' }]] as const) {
+      await writeFile(path.join(dir, 'icons', `${name}.png`), encodePng(createImage(32, 32, { r: 40, g: 160, b: 60 })));
+      await writeFile(path.join(dir, 'icons', `${name}.trace.json`), JSON.stringify({
+        asset: `icons/${name}.png`, set: 'onboarding', finishedAt: '2026-10-29T00:00:00.000Z',
+        request: { prompt: name, width: 32, height: 32, kind: 'icon' }, ...(review ? { review } : {}),
+      }));
+    }
+    await generateMedia({
+      projectRoot, projectsRoot, projectId: 'p1', surface: 'image', model: 'comfyui-agent',
+      prompt: 'a coffee cup icon', output: 'coffee.png',
+      comfy: { width: 256, height: 256, maxRounds: 1, kind: 'icon', set: 'onboarding' },
+      referenceCacheDir: path.join(root, 'reference-cache'),
+    });
+    const trace = JSON.parse(await readFile(path.join(dir, 'coffee.trace.json'), 'utf8'));
+    expect(trace).toMatchObject({ asset: 'coffee.png', set: 'onboarding', request: { kind: 'icon' } });
+    // The fake server only has SDXL, which cannot take reference images.
+    expect(trace.references).toMatchObject({ shape: [], set: [], note: expect.stringMatching(/cannot take reference images/) });
+    expect(Object.values(prompts[0]!).some((n) => n.class_type === 'ReferenceLatent')).toBe(false);
+  });
+
   it('reports an unreachable server as a connection error, never a stub, even when stubs are allowed', async () => {
     process.env.OD_MEDIA_ALLOW_STUBS = '1';
     await writeMediaConfig({ baseUrl: 'http://127.0.0.1:1' });
@@ -283,6 +307,9 @@ describe('comfyui request options and prompt gating', () => {
   it('parses the comfy request options strictly', () => {
     expect(parseComfyMediaOptions({ comfy: { width: 512, height: 512, transparent: true, maxRounds: 2, negative: ' text ', workflow: { a: 1 } } }))
       .toEqual({ width: 512, height: 512, transparent: true, maxRounds: 2, negative: 'text', workflow: { a: 1 } });
+    expect(parseComfyMediaOptions({ comfy: { kind: 'icon', set: ' Onboarding icons ', references: false } }))
+      .toEqual({ kind: 'icon', set: 'Onboarding icons', references: false });
+    expect(parseComfyMediaOptions({ comfy: { kind: 'poster', set: 'x'.repeat(65) } })).toBeUndefined();
     expect(parseComfyMediaOptions({ comfy: { width: 512 } })).toBeUndefined();
     expect(parseComfyMediaOptions({ comfy: { maxRounds: 99 } })).toBeUndefined();
     expect(parseComfyMediaOptions({})).toBeUndefined();

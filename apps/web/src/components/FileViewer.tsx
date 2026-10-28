@@ -289,6 +289,7 @@ import {
 import { composerHasUnsentWork } from '../comments/composer-unsent-work';
 import { RemixIcon } from './RemixIcon';
 import { VisualCheckAction } from './visual-check/VisualCheckAction';
+import { GeneratedAssetReview } from './generated-assets/GeneratedAssetReview';
 import { projectIsSharedWithWorkspace } from '../collab/project-shared-status';
 import { HandoffButton } from './HandoffButton';
 import { SocialShareGrid } from './SocialShareGrid';
@@ -19437,6 +19438,7 @@ function ImageViewer({
           </span>
         </div>
         <div className="viewer-toolbar-actions">
+          {file.kind === 'sketch' ? null : <GeneratedAssetReview projectId={projectId} fileName={file.name} />}
           <a
             className="ghost-link"
             href={projectFileUrl(projectId, file.name, workspaceContext)}
