@@ -16,6 +16,7 @@ import {
   type ModelChoice,
 } from "../src/graphs.js";
 import { summarizeCapabilities } from "../src/object-info.js";
+import { composeKeyedPrompt, stripKeyedPrompt } from "../src/prompts.js";
 import type { ObjectInfo } from "../src/types.js";
 import { validateGraph } from "../src/validate.js";
 import { FAMILY_NODES } from "./fixtures/object-info-families.js";
@@ -242,5 +243,15 @@ describe("instruction edits", () => {
     const noEditor = serverInfo({ unets: ["z_image_turbo_int8_convrot.safetensors"] });
     expect(() => applyEdit(t2i("zimage"), { op: "edit_with_instruction", image: "a.png", instruction: "x" }, noEditor)).toThrow(GraphEditError);
     expect(parseGraphEdit({ op: "edit_with_instruction", image: "a.png", instruction: "Make it blue" })).toEqual({ op: "edit_with_instruction", image: "a.png", instruction: "Make it blue" });
+  });
+});
+
+describe("key-colour prompts", () => {
+  it("uses CLIP weights for SD checkpoints and a plain sentence for language-model encoders", () => {
+    expect(composeKeyedPrompt("a lantern", "#00FF00")).toMatch(/^\(isolated on a plain flat solid bright chroma-key green background:1\.2\), a lantern/);
+    const sentence = composeKeyedPrompt("A single red lantern", "#00FF00", "sentences");
+    expect(sentence).toMatch(/^A single red lantern\. The subject is isolated on a plain, flat, uniform bright chroma-key green background/);
+    expect(sentence).not.toContain(":1.2");
+    expect(stripKeyedPrompt(sentence)).toBe("A single red lantern.");
   });
 });

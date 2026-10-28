@@ -7,7 +7,7 @@ import { randomInt } from "node:crypto";
 import type { ComfyClient } from "./client.js";
 import { GraphEditError } from "./errors.js";
 import { applyEdit, describeDoc, type GraphEdit } from "./edits.js";
-import { buildTxt2Img, chooseCheckpoint, defaultSampling, detectFamily, docFromGraph, planGenerationSize, type GraphDoc } from "./graphs.js";
+import { buildTxt2Img, chooseModel, defaultSampling, detectFamily, docFromGraph, planGenerationSize, type GraphDoc } from "./graphs.js";
 import { coverToSize, decodePng, encodePng } from "./image.js";
 import type { ApiWorkflow, OutputImage, ProgressEvent } from "./types.js";
 import { toApiWorkflow } from "./ui-convert.js";
@@ -67,11 +67,14 @@ export async function runWorkflow(comfy: ComfyClient, input: WorkflowRunInput): 
     tryEdit({ op: "set_seed", seed }, "seed");
   } else {
     if (!input.prompt) throw new GraphEditError("run_workflow", "a prompt is required when no workflow is supplied");
-    const checkpoint = chooseCheckpoint(info, input.checkpoint);
-    const family = detectFamily(checkpoint);
+    const choice = chooseModel(info, input.checkpoint);
+    const family = choice.family;
     const gen = planGenerationSize(family, input.width ?? 1024, input.height ?? 1024);
     doc = buildTxt2Img({
-      checkpoint,
+      checkpoint: choice.model,
+      family,
+      ...(choice.textEncoder ? { textEncoder: choice.textEncoder } : {}),
+      ...(choice.vae ? { vae: choice.vae } : {}),
       positive: input.prompt,
       negative: input.negative ?? "blurry, low quality, watermark, text",
       width: gen.width,

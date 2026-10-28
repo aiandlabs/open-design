@@ -24,7 +24,7 @@ import { runWorkflow } from "./workflow-run.js";
 export const TOOLS = [
   {
     name: "comfy_inspect",
-    description: "Describe the configured ComfyUI server: version, devices, installed checkpoints/LoRAs/upscale models, samplers, and which base graphs it can run.",
+    description: "Describe the configured ComfyUI server: version, devices, installed checkpoints, diffusion model sets (Z-Image, FLUX.2 klein, Ming-Image), the default and instruction-editing models, LoRAs, upscale models, samplers, and which base graphs it can run.",
     inputSchema: { type: "object", properties: {}, additionalProperties: false },
   },
   {
@@ -39,7 +39,7 @@ export const TOOLS = [
         width: { type: "integer" },
         height: { type: "integer" },
         seed: { type: "integer" },
-        checkpoint: { type: "string" },
+        checkpoint: { type: "string", description: "Checkpoint or diffusion model file to use. Default: the strongest installed model." },
         output_path: { type: "string", description: "Where to write the PNG (default: output dir)." },
       },
       additionalProperties: false,
@@ -57,7 +57,7 @@ export const TOOLS = [
         transparent: { type: "boolean" },
         style: { type: "string", description: "Style and palette notes." },
         negative: { type: "string", description: "Things the image must not contain." },
-        checkpoint: { type: "string" },
+        checkpoint: { type: "string", description: "Checkpoint or diffusion model file to use. Default: the strongest installed model." },
         seed: { type: "integer" },
         max_rounds: { type: "integer" },
         max_time_s: { type: "number" },

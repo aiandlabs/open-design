@@ -14,6 +14,8 @@ import { createToolHandler } from "../src/mcp.js";
 import { CRITIC_TOOL, normalizeCriticItems, PLAN_TOOL, REPAIR_TOOL } from "../src/prompts.js";
 import type { ApiWorkflow } from "../src/types.js";
 import { startFakeComfy, type FakeComfy, type FakeComfyOptions } from "./fixtures/fake-comfy.js";
+import { FAMILY_NODES } from "./fixtures/object-info-families.js";
+import { makeObjectInfo } from "./fixtures/object-info.js";
 
 const cleanups: (() => Promise<void>)[] = [];
 afterEach(async () => {
@@ -235,6 +237,62 @@ describe("generateAsset", () => {
     const g2 = fake.prompts[1]!.graph;
     expect(g2.load!.inputs.image).toBe(fake.uploads[0]!.name);
     expect(g2.sampler!.inputs).toMatchObject({ denoise: 0.5, latent_image: ["encode", 0] });
+  });
+
+  describe("with split-loader model sets installed", () => {
+    const familyInfo = () => ({ ...makeObjectInfo(), ...structuredClone(FAMILY_NODES) });
+
+    it("generates with the strongest family, fixed distilled settings and sentence prompts", async () => {
+      const { fake, comfy, workDir } = await setup({ objectInfo: familyInfo(), render: () => encodePng(discOnGreen(768, 768)) });
+      const { llm, log } = stubLlm({ plan: { ...PLAN, key_color: "#00FF00" }, critic: () => ({ items: [{ id: "count", pass: true }, { id: "background", pass: true }] }) });
+      const res = await generateAsset({ prompt: "lantern", width: 512, height: 512, transparent: true, seed: 5 }, { comfy, llm, workDir, plannerModel: "test/planner", criticModel: "test/critic" });
+      const g = fake.prompts[0]!.graph;
+      expect(g.unet!.inputs.unet_name).toBe("z_image_turbo_int8_convrot.safetensors");
+      // The plan asked for 20 steps at cfg 6; the distilled model keeps 8 steps at cfg 1.
+      expect(g.sampler!.inputs).toMatchObject({ steps: 8, cfg: 1, sampler_name: "res_multistep", seed: 5 });
+      expect(String(g.pos!.inputs.text)).toMatch(/^red paper lantern, white background\. The subject is isolated on a plain, flat, uniform bright chroma-key green background/);
+      expect(res.trace.server).toMatchObject({ family: "zimage", editModel: { family: "flux2_klein", model: "flux-2-klein-4b.safetensors" } });
+      expect(positiveOf(log[0]!.body)).toContain("Model family: zimage");
+      expect(positiveOf(log[0]!.body)).toContain("Instruction editing is available");
+    });
+
+    it("repairs with edit_previous, refuses tuning a distilled model, and re-prompts from text-to-image", async () => {
+      const { fake, comfy, workDir } = await setup({ objectInfo: familyInfo(), render: () => lanternPng(768, 768) });
+      const { llm, log } = stubLlm({
+        plan: PLAN,
+        critic: (n) => ({ items: [{ id: "count", pass: n >= 2 }, { id: "background", pass: true }] }),
+        repair: (n) =>
+          n === 0
+            ? { rationale: "remove extras", edits: [{ op: "edit_previous", instruction: "Remove the extra lanterns" }, { op: "set_cfg", cfg: 7 }] }
+            : { rationale: "start over", edits: [{ op: "set_prompt", text: "exactly one red paper lantern" }] },
+      });
+      const res = await generateAsset({ prompt: "lantern", width: 768, height: 768, seed: 9 }, { comfy, llm, workDir, plannerModel: "test/planner", criticModel: "test/critic", limits: { maxRounds: 3 } });
+      expect(res.trace.stopReason).toBe("all-pass");
+      expect(fake.uploads).toHaveLength(1);
+      const edit = fake.prompts[1]!.graph;
+      expect(edit.load!.inputs.image).toBe(fake.uploads[0]!.name);
+      expect(edit.refPos!.class_type).toBe("ReferenceLatent");
+      expect(edit.pos!.inputs.text).toBe("Remove the extra lanterns");
+      expect(edit.noise!.inputs.noise_seed).toBe(9);
+      expect(res.trace.rounds[0]!.repair!.rejected[0]!.error).toMatch(/distilled/);
+      expect(res.trace.rounds[1]!.settings).toMatchObject({ kind: "edit", family: "flux2_klein" });
+      // After an edit, set_prompt goes back to text-to-image with the strongest model.
+      const third = fake.prompts[2]!.graph;
+      expect(third.unet!.inputs.unet_name).toBe("z_image_turbo_int8_convrot.safetensors");
+      expect(third.pos!.inputs.text).toBe("exactly one red paper lantern");
+      expect(positiveOf(log.find((l) => l.tool === REPAIR_TOOL)!.body)).toContain("Instruction editing: available (flux2_klein");
+    });
+
+    it("tells the planner when edit_previous is not possible", async () => {
+      const { comfy, workDir } = await setup({ render: () => lanternPng(768, 768) });
+      const { llm } = stubLlm({
+        plan: PLAN,
+        critic: (n) => ({ items: [{ id: "count", pass: n > 0 }, { id: "background", pass: true }] }),
+        repair: () => ({ rationale: "edit", edits: [{ op: "edit_previous", instruction: "Remove the extra lanterns" }] }),
+      });
+      const res = await generateAsset({ prompt: "lantern", width: 768, height: 768 }, { comfy, llm, workDir, plannerModel: "test/planner", criticModel: "test/critic", limits: { maxRounds: 2 } });
+      expect(res.trace.rounds[0]!.repair!.rejected[0]!.error).toMatch(/no instruction-editing model is installed/);
+    });
   });
 
   it("inpaints a region of the previous output with a generated mask", async () => {

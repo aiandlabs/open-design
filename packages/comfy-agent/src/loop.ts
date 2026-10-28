@@ -10,15 +10,19 @@ import path from "node:path";
 import type { ComfyClient } from "./client.js";
 import { ComfyAgentError, GraphEditError } from "./errors.js";
 import { applyEdit, describeDoc, parseGraphEdit, type GraphEdit } from "./edits.js";
+import { familySpec } from "./families.js";
 import {
   availableBaseGraphs,
   buildTxt2Img,
-  chooseCheckpoint,
+  chooseEditModel,
+  chooseModel,
   defaultSampling,
   detectFamily,
   docFromGraph,
   planGenerationSize,
   type GraphDoc,
+  type ModelChoice,
+  type ModelFamily,
 } from "./graphs.js";
 import {
   alphaStats,
@@ -51,6 +55,7 @@ import {
   KEY_COLORS,
   KEY_NEGATIVE,
   composeKeyedPrompt,
+  type PromptStyle,
   normalizeCriticItems,
   stripKeyedPrompt,
   PLAN_SCHEMA,
@@ -72,7 +77,10 @@ export type AssetRequest = {
   style?: string;
   /** Things the image must not contain. */
   negative?: string;
-  /** Checkpoint to use (must be installed). */
+  /**
+   * Model to use: a checkpoint or a diffusion model file name (must be
+   * installed as a complete set). Default: the strongest installed model.
+   */
   checkpoint?: string;
   seed?: number;
 };
@@ -156,7 +164,14 @@ export type AssetTrace = {
   request: AssetRequest;
   limits: Required<AssetLimits>;
   models: { planner: string; critic: string; plannerShape: ApiShape; criticShape: ApiShape };
-  server: { url: string; checkpoint: string; family: string; generationSize: { width: number; height: number } };
+  server: {
+    url: string;
+    checkpoint: string;
+    family: string;
+    generationSize: { width: number; height: number };
+    /** Model that runs `edit_previous`, when one is installed. */
+    editModel?: { family: string; model: string };
+  };
   plan: {
     checklist: ChecklistItem[];
     positivePrompt: string;
@@ -191,6 +206,7 @@ type PlannerEdit =
   | GraphEdit
   | { op: "img2img_from_previous"; denoise: number }
   | { op: "inpaint_previous"; rect: NormalizedRect; denoise: number }
+  | { op: "edit_previous"; instruction: string }
   | { op: "set_key_color"; hex: string };
 
 type PlanOutput = {
@@ -226,11 +242,17 @@ export async function generateAsset(request: AssetRequest, options: AssetLoopOpt
     throw new ComfyAgentError("GRAPH_EDIT", "this ComfyUI server cannot run a basic text-to-image graph (missing core nodes or checkpoints)");
   }
 
-  // Starting document: the caller's graph, or a built txt2img base graph.
-  const checkpoint = options.baseGraph ? "" : chooseCheckpoint(info, request.checkpoint);
-  const family = detectFamily(checkpoint || request.checkpoint || "");
+  // Starting document: the caller's graph, or a built txt2img base graph with
+  // the strongest installed model (SDXL when nothing newer is installed).
+  const choice: ModelChoice | undefined = options.baseGraph ? undefined : chooseModel(info, request.checkpoint);
+  const checkpoint = choice?.model ?? "";
+  const family = choice?.family ?? (options.baseGraph ? docFromGraph(structuredClone(options.baseGraph)).family : detectFamily(request.checkpoint ?? ""));
+  const spec = familySpec(family);
+  const promptStyle: PromptStyle = spec ? "sentences" : "tags";
+  const editModel = chooseEditModel(info);
   const gen = planGenerationSize(family, request.width, request.height);
   const seed = request.seed ?? randomInt(0, 2 ** 32 - 1);
+  log(`model ${choice?.label ?? checkpoint ?? "custom graph"} (${family})${editModel ? `; edits with ${editModel.label}` : ""}`);
 
   // 1. Plan.
   log(`planning with ${plannerModel}`);
@@ -238,7 +260,7 @@ export async function generateAsset(request: AssetRequest, options: AssetLoopOpt
     {
       model: plannerModel,
       system: PLANNER_SYSTEM,
-      content: [{ type: "text", text: planUserText(request, caps, family, gen) }],
+      content: [{ type: "text", text: planUserText(request, caps, family, gen, choice, editModel) }],
       schema: PLAN_SCHEMA,
       toolName: PLAN_TOOL,
       maxTokens: 8192,
@@ -250,15 +272,33 @@ export async function generateAsset(request: AssetRequest, options: AssetLoopOpt
   let keyColor = request.transparent ? plan.key_color ?? "#00FF00" : undefined;
   let subjectPrompt = plan.positive_prompt;
   let subjectNegative = plan.negative_prompt;
-  const composePositive = () => composeKeyedPrompt(subjectPrompt, keyColor);
+  const composePositive = () => composeKeyedPrompt(subjectPrompt, keyColor, promptStyle);
   const composeNegative = () => (keyColor ? `${subjectNegative}, ${KEY_NEGATIVE}` : subjectNegative);
 
   const sampling = defaultSampling(family, info);
-  if (plan.steps && plan.steps >= 8 && plan.steps <= 60) sampling.steps = Math.round(plan.steps);
-  if (plan.cfg && plan.cfg >= 1 && plan.cfg <= 15) sampling.cfg = plan.cfg;
-  if (plan.sampler_name && caps.samplers.includes(plan.sampler_name)) sampling.sampler = plan.sampler_name;
-  if (plan.scheduler && caps.schedulers.includes(plan.scheduler)) sampling.scheduler = plan.scheduler;
+  // Distilled families (Z-Image-Turbo, FLUX.2 klein, Ming-Image) have fixed steps and CFG.
+  if (!spec?.distilled) {
+    if (plan.steps && plan.steps >= 8 && plan.steps <= 60) sampling.steps = Math.round(plan.steps);
+    if (plan.cfg && plan.cfg >= 1 && plan.cfg <= 15) sampling.cfg = plan.cfg;
+    if (plan.sampler_name && caps.samplers.includes(plan.sampler_name)) sampling.sampler = plan.sampler_name;
+    if (plan.scheduler && caps.schedulers.includes(plan.scheduler)) sampling.scheduler = plan.scheduler;
+  }
   sampling.seed = seed;
+
+  const buildBase = (seedValue: number): GraphDoc =>
+    buildTxt2Img({
+      checkpoint,
+      family,
+      ...(choice?.textEncoder ? { textEncoder: choice.textEncoder } : {}),
+      ...(choice?.vae ? { vae: choice.vae } : {}),
+      positive: composePositive(),
+      negative: composeNegative(),
+      width: gen.width,
+      height: gen.height,
+      filenamePrefix: "comfy-agent/asset",
+      ...sampling,
+      seed: seedValue,
+    });
 
   let doc: GraphDoc;
   if (options.baseGraph) {
@@ -267,16 +307,15 @@ export async function generateAsset(request: AssetRequest, options: AssetLoopOpt
     if (doc.roles.negative) doc = applyEdit(doc, { op: "set_negative_prompt", text: composeNegative() }, info);
     if (doc.roles.sampler) doc = applyEdit(doc, { op: "set_seed", seed }, info);
   } else {
-    doc = buildTxt2Img({
-      checkpoint,
-      positive: composePositive(),
-      negative: composeNegative(),
-      width: gen.width,
-      height: gen.height,
-      filenamePrefix: "comfy-agent/asset",
-      ...sampling,
-    });
+    doc = buildBase(seed);
   }
+  /** Prompt changes on an edit graph start again from text-to-image with the new prompt. */
+  const reprompt = (): GraphDoc => {
+    if (doc.kind === "edit" && !options.baseGraph) return buildBase(Number(describeDoc(doc).seed ?? seed));
+    let d = applyEdit(doc, { op: "set_prompt", text: composePositive() }, info);
+    if (d.roles.negative) d = applyEdit(d, { op: "set_negative_prompt", text: composeNegative() }, info);
+    return d;
+  };
 
   const trace: AssetTrace = {
     id: randomUUID(),
@@ -286,7 +325,13 @@ export async function generateAsset(request: AssetRequest, options: AssetLoopOpt
     request,
     limits,
     models: { planner: plannerModel, critic: criticModel, plannerShape, criticShape },
-    server: { url: options.comfy.baseUrl, checkpoint: String(describeDoc(doc).checkpoint ?? checkpoint), family: doc.family, generationSize: { width: gen.width, height: gen.height } },
+    server: {
+      url: options.comfy.baseUrl,
+      checkpoint: String(describeDoc(doc).checkpoint ?? checkpoint),
+      family: doc.family,
+      generationSize: { width: gen.width, height: gen.height },
+      ...(editModel ? { editModel: { family: editModel.family, model: editModel.model } } : {}),
+    },
     plan: {
       checklist: plan.checklist,
       positivePrompt: plan.positive_prompt,
@@ -489,21 +534,36 @@ export async function generateAsset(request: AssetRequest, options: AssetLoopOpt
     for (const raw of repair.proposed) {
       try {
         const edit = parsePlannerEdit(raw);
+        if (FIXED_FOR_DISTILLED.has(edit.op) && (spec?.distilled || doc.kind === "edit")) {
+          throw new GraphEditError(edit.op, `${spec?.label ?? doc.family} is distilled: steps, cfg, sampler and scheduler are fixed`);
+        }
         switch (edit.op) {
           case "set_prompt":
             subjectPrompt = stripKeyedPrompt(edit.text);
-            doc = applyEdit(doc, { op: "set_prompt", text: composePositive() }, info);
+            doc = reprompt();
             break;
           case "set_negative_prompt":
             subjectNegative = edit.text.replace(`, ${KEY_NEGATIVE}`, "");
+            if (doc.kind === "edit" || !doc.roles.negative) {
+              throw new GraphEditError(edit.op, `${spec?.label ?? doc.family} ignores the negative prompt; state the requirement in set_prompt`);
+            }
             doc = applyEdit(doc, { op: "set_negative_prompt", text: composeNegative() }, info);
             break;
           case "set_key_color":
             if (!request.transparent) throw new GraphEditError(edit.op, "the request does not need transparency");
             keyColor = edit.hex;
-            doc = applyEdit(doc, { op: "set_prompt", text: composePositive() }, info);
-            doc = applyEdit(doc, { op: "set_negative_prompt", text: composeNegative() }, info);
+            doc = reprompt();
             break;
+          case "edit_previous": {
+            if (!previousRaw) throw new GraphEditError(edit.op, "no previous image");
+            if (!editModel) throw new GraphEditError(edit.op, "no instruction-editing model is installed; use img2img_from_previous or inpaint_previous");
+            const up = await options.comfy.uploadImage(previousRaw, `comfy-agent-${trace.id.slice(0, 8)}-r${round}-edit.png`);
+            const instruction = keyColor
+              ? `${edit.instruction.replace(/\s+$/, "").replace(/([^.!?])$/, "$1.")} Keep the plain flat ${KEY_COLORS[keyColor] ?? "key-colour"} background unchanged.`
+              : edit.instruction;
+            doc = applyEdit(doc, { op: "edit_with_instruction", image: up.name, instruction }, info);
+            break;
+          }
           case "img2img_from_previous": {
             if (!previousRaw) throw new GraphEditError(edit.op, "no previous image");
             const up = await options.comfy.uploadImage(previousRaw, `comfy-agent-${trace.id.slice(0, 8)}-r${round}.png`);
@@ -641,8 +701,19 @@ function normalizePlan(raw: PlanOutput, request: AssetRequest): PlanOutput {
   };
 }
 
+/** Settings a distilled model (or an edit graph) runs with fixed values. */
+const FIXED_FOR_DISTILLED = new Set<string>(["set_steps", "set_cfg", "set_sampler", "set_scheduler", "set_denoise"]);
+
 function parsePlannerEdit(raw: unknown): PlannerEdit {
   const r = (raw ?? {}) as Record<string, unknown>;
+  if (r.op === "edit_previous") {
+    const instruction = typeof r.instruction === "string" ? r.instruction.trim() : typeof r.text === "string" ? r.text.trim() : "";
+    if (!instruction) throw new GraphEditError("edit_previous", "instruction must be a non-empty string");
+    return { op: "edit_previous", instruction };
+  }
+  if (r.op === "edit_with_instruction") {
+    throw new GraphEditError("edit_with_instruction", "use edit_previous instead");
+  }
   if (r.op === "img2img_from_previous") {
     const d = Number(r.denoise ?? 0.55);
     if (!(d > 0 && d <= 1)) throw new GraphEditError("img2img_from_previous", "denoise must be in (0, 1]");
@@ -714,16 +785,22 @@ function errorInfo(err: unknown): { code: string; message: string } {
 function planUserText(
   request: AssetRequest,
   caps: ReturnType<typeof summarizeCapabilities>,
-  family: string,
+  family: ModelFamily,
   gen: { width: number; height: number },
+  choice: ModelChoice | undefined,
+  editModel: ModelChoice | undefined,
 ): string {
+  const spec = familySpec(family);
   return [
     `Request: ${request.prompt}`,
     `Output size: ${request.width}x${request.height} px (generated at ${gen.width}x${gen.height}, then cropped/resized in code).`,
     `Transparent background required: ${request.transparent ? "yes — choose key_color" : "no"}`,
     request.style ? `Style and palette notes: ${request.style}` : "",
     request.negative ? `Must not contain: ${request.negative}` : "",
-    `Checkpoint family: ${family}. Available samplers: ${caps.samplers.slice(0, 25).join(", ")}. Schedulers: ${caps.schedulers.join(", ")}.`,
+    spec
+      ? `Model family: ${family} (${choice?.label ?? spec.label}, distilled, language-model text encoder). Write positive_prompt as plain sentences; steps, cfg, sampler and scheduler are fixed.`
+      : `Model family: ${family}. Available samplers: ${caps.samplers.slice(0, 25).join(", ")}. Schedulers: ${caps.schedulers.join(", ")}.`,
+    editModel ? `Instruction editing is available for repairs (${editModel.label}).` : "",
     `Allowed key colours: ${Object.entries(KEY_COLORS).map(([h, n]) => `${h} (${n})`).join(", ")}.`,
     `Call ${PLAN_TOOL}.`,
   ].filter(Boolean).join("\n");
@@ -767,6 +844,10 @@ function repairUserText(
     `Critic grades: ${JSON.stringify(rt.critic?.items ?? [])}`,
     failing.length ? `Failing: ${failing.map((f) => `${f.id} — ${f.repair_hint ?? f.evidence ?? ""}`).join("; ")}` : "Only code checks are failing.",
     history.length ? `Earlier rounds: ${JSON.stringify(history)}` : "",
+    `Model family: ${doc.family}${doc.kind === "edit" ? " (the current graph is an instruction edit of the previous image)" : ""}.`,
+    caps.editModel
+      ? `Instruction editing: available (${caps.editModel.family}, ${caps.editModel.model}); use edit_previous for detail fixes.`
+      : "Instruction editing: not available on this server.",
     `Available: samplers ${caps.samplers.slice(0, 25).join(", ")}; schedulers ${caps.schedulers.join(", ")}; checkpoints ${caps.checkpoints.join(", ")}; LoRAs ${caps.loras.join(", ") || "none"}; upscale models ${caps.upscaleModels.join(", ") || "none"}.`,
     "When you change the prompt with set_prompt, give the full new subject prompt (the background phrase is added automatically).",
     `Call ${REPAIR_TOOL}.`,

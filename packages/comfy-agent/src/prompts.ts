@@ -16,7 +16,7 @@ export const PLAN_TOOL = "submit_plan";
 export const REPAIR_TOOL = "submit_edits";
 export const CRITIC_TOOL = "submit_grades";
 
-export const PLANNER_SYSTEM = `You plan image generation on a local ComfyUI server running Stable Diffusion checkpoints.
+export const PLANNER_SYSTEM = `You plan image generation on a local ComfyUI server. The user message names the model family in use.
 You never draw. You write prompts and choose sampling settings, and you turn the user's request into a checklist a vision model can verify by looking at the finished image.
 
 Checklist rules:
@@ -25,20 +25,23 @@ Checklist rules:
 - Do not include size, resolution, file format or transparency items; code checks those.
 - Use short ids such as "count", "subject", "background", "style".
 
-Prompt rules for Stable Diffusion:
-- positive_prompt: comma-separated visual description, most important first. State counts explicitly ("a single", "one", "solo"). No instructions, no negations.
-- negative_prompt: things to avoid, comma-separated (for example "multiple objects, duplicates, text, watermark, blurry").
+Prompt rules depend on the model family:
+- Stable Diffusion checkpoints (sd15, sdxl): positive_prompt is a comma-separated visual description, most important first. State counts explicitly ("a single", "one", "solo"). No instructions, no negations. negative_prompt lists things to avoid, comma-separated (for example "multiple objects, duplicates, text, watermark, blurry").
+- Models with a language-model text encoder (zimage, flux2_klein, ming): positive_prompt is one to three plain descriptive sentences, the subject and its count first, then style, colours, composition and lighting. These models read sentences and follow counts and stated absences well ("The background is empty", "There is no text"). They are distilled and ignore the negative prompt: still fill negative_prompt, but put every requirement in the positive prompt. Do not set steps, cfg, sampler_name or scheduler for these families; their values are fixed.
 - When the asset needs a transparent background, describe the subject only; the system adds the flat key-colour background phrase itself. Choose key_color from the allowed list so it is far from every colour in the subject.`;
 
-export const REPAIR_SYSTEM = `You repair a Stable Diffusion generation on a ComfyUI server. You receive the request, the checklist, the current graph settings, the critic's grades with repair hints, the code checks, and the image.
+export const REPAIR_SYSTEM = `You repair an image generation on a local ComfyUI server. You receive the request, the checklist, the current graph settings, the critic's grades with repair hints, the code checks, the image, and which edits this server supports.
 Return a small list of typed edits that are most likely to make the failing checklist items pass without breaking the passing ones.
 
 Guidance:
-- Prompt problems (wrong count, missing element, extra objects, wrong style): set_prompt and/or set_negative_prompt. Put the failing requirement early in the positive prompt and add the unwanted element to the negative prompt.
+- Prompt problems (wrong count, missing element, extra objects, wrong style): set_prompt and/or set_negative_prompt. Put the failing requirement early in the positive prompt. For sdxl/sd15 add the unwanted element to the negative prompt; for zimage, flux2_klein and ming the negative prompt is ignored, so state the absence in the positive prompt instead.
 - Composition is mostly wrong: change set_seed to a new value as well as fixing the prompt.
-- Composition is mostly right but a detail is wrong: img2img_from_previous with denoise 0.45-0.7, or inpaint_previous on the region (x, y, width, height are fractions 0-1 of the image) with denoise 0.6-0.9.
-- Prompt adherence is weak: raise cfg slightly (at most 9 for SDXL) or steps.
-- Background not flat or not clean for a transparent asset: strengthen the prompt and negative prompt, or set_key_color to a colour further from the subject.
+- Composition is mostly right but a detail is wrong:
+  - When instruction editing is available, prefer edit_previous with one short imperative instruction that names only the change and says what stays the same ("Remove the two smaller lanterns; keep the large red lantern and the background unchanged", "Change the cup to matcha green"). It works on the previous image as a whole, so no region is needed.
+  - Otherwise use img2img_from_previous with denoise 0.45-0.7, or inpaint_previous on the region (x, y, width, height are fractions 0-1 of the image) with denoise 0.6-0.9. These two exist only for sdxl and sd15.
+  - After edit_previous, a set_prompt starts again from text-to-image with the new prompt.
+- Prompt adherence is weak on sdxl/sd15: raise cfg slightly (at most 9 for SDXL) or steps. Never change steps, cfg, sampler or scheduler for zimage, flux2_klein or ming: they are distilled and those values are fixed.
+- Background not flat or not clean for a transparent asset: strengthen the prompt, or set_key_color to a colour further from the subject, or edit_previous ("Make the background a plain flat bright green with no shadow").
 - Only use samplers, schedulers, LoRAs, checkpoints and upscale models from the lists you are given.
 - Prefer at most 4 edits. Do not repeat an edit that already failed in an earlier round.`;
 
@@ -60,6 +63,7 @@ const editOps = [
   "upscale",
   "img2img_from_previous",
   "inpaint_previous",
+  "edit_previous",
   "set_key_color",
 ];
 
@@ -97,6 +101,7 @@ export const REPAIR_SCHEMA: JsonSchema = {
         properties: {
           op: { type: "string", enum: editOps },
           text: { type: "string" },
+          instruction: { type: "string", description: "edit_previous: one short imperative edit instruction." },
           steps: { type: "integer" },
           cfg: { type: "number" },
           sampler_name: { type: "string" },
@@ -159,16 +164,29 @@ export function keyColorPhrase(hex: string): string {
   return `uniform ${name} backdrop, studio cut-out, no shadow, no floor`;
 }
 
-/** Positive prompt for a keyed asset: weighted lead, subject, then the backdrop reminder. */
-export function composeKeyedPrompt(subject: string, hex: string | undefined): string {
-  return hex ? `${keyColorLead(hex)}, ${subject}, ${keyColorPhrase(hex)}` : subject;
+/**
+ * Sentence form of the backdrop instruction for language-model text encoders
+ * (Z-Image, FLUX.2, Ming-Image), which read `(text:1.2)` weights as literal text.
+ */
+export function keyColorSentence(hex: string): string {
+  const name = KEY_COLORS[hex.toUpperCase()] ?? "flat solid";
+  return `The subject is isolated on a plain, flat, uniform ${name} background that fills the whole frame, with no shadow, no floor, no gradient and no other objects.`;
+}
+
+export type PromptStyle = "tags" | "sentences";
+
+/** Positive prompt for a keyed asset: weighted lead, subject, then the backdrop reminder (or one sentence for LLM encoders). */
+export function composeKeyedPrompt(subject: string, hex: string | undefined, style: PromptStyle = "tags"): string {
+  if (!hex) return subject;
+  if (style === "sentences") return `${subject.replace(/\s+$/, "").replace(/([^.!?])$/, "$1.")} ${keyColorSentence(hex)}`;
+  return `${keyColorLead(hex)}, ${subject}, ${keyColorPhrase(hex)}`;
 }
 
 /** Remove what {@link composeKeyedPrompt} added, if the planner echoed it back. */
 export function stripKeyedPrompt(text: string): string {
   let out = text;
   for (const hex of Object.keys(KEY_COLORS)) {
-    out = out.replace(`${keyColorLead(hex)}, `, "").replace(`, ${keyColorPhrase(hex)}`, "");
+    out = out.replace(`${keyColorLead(hex)}, `, "").replace(`, ${keyColorPhrase(hex)}`, "").replace(` ${keyColorSentence(hex)}`, "").replace(keyColorSentence(hex), "");
   }
   return out.trim();
 }
