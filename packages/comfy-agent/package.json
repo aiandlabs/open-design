@@ -1,0 +1,40 @@
+{
+  "name": "@open-design/comfy-agent",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "ComfyUI client, workflow validation, typed graph edits, and a planner/critic asset loop driven by the ai& LLM API.",
+  "main": "./dist/index.mjs",
+  "types": "./dist/index.d.ts",
+  "bin": {
+    "comfy-agent-mcp": "./dist/bin.mjs"
+  },
+  "files": [
+    "dist"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.mjs"
+    }
+  },
+  "scripts": {
+    "build": "node ./esbuild.config.mjs && tsc -p tsconfig.json --emitDeclarationOnly",
+    "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.tests.json --noEmit"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.29.0",
+    "pngjs": "7.0.0"
+  },
+  "devDependencies": {
+    "@typescript/native": "npm:typescript@7.0.2",
+    "@types/node": "24.12.2",
+    "@types/pngjs": "6.0.5",
+    "esbuild": "0.28.0",
+    "vitest": "4.1.6"
+  },
+  "engines": {
+    "node": "~24"
+  }
+}

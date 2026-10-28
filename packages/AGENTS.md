@@ -6,6 +6,7 @@ Follow the root `AGENTS.md` first. This file only records module-level boundarie
 
 - `packages/agui-adapter`: pure TypeScript adapter between persisted OpenDesign agent/GenUI/plugin-pipeline events and the AG-UI event protocol. Keep transport and filesystem concerns out; daemon producers and web/CopilotKit consumers share this conversion boundary.
 - `packages/contracts`: web/daemon app contract layer. Keep it pure TypeScript; it must not depend on Next.js, Express, Node filesystem/process APIs, browser APIs, SQLite, daemon internals, or the sidecar control-plane protocol.
+- `packages/comfy-agent`: ComfyUI client (HTTP + websocket), workflow format conversion and validation against `/object_info`, base graphs and typed graph edits, pure-JS PNG post-processing (resize, chroma key), the ai&-API planner/critic asset loop, and the `comfy-agent-mcp` stdio MCP server. The daemon consumes it for the `comfyui` media provider; keep daemon paths and Open Design config out of it.
 - `packages/components`: shared React UI primitives and primitive CSS. It may depend on React types/runtime only; keep product workflows and app-specific layout/styling in the apps.
 - `packages/diagnostics`: shared diagnostics export primitives for log collection, redaction, manifests, crash-report discovery, and zip packaging used by daemon and desktop.
 - `packages/download`: managed-download runtime. Owns resumable and checksum-verified transfers, concurrent-request deduplication, target locking, inspection/removal, copy-and-clear, and pruning; callers supply the download identity and storage base.
@@ -38,6 +39,8 @@ Follow the root `AGENTS.md` first. This file only records module-level boundarie
 ```bash
 pnpm --filter @open-design/agui-adapter typecheck
 pnpm --filter @open-design/agui-adapter test
+pnpm --filter @open-design/comfy-agent typecheck
+pnpm --filter @open-design/comfy-agent test
 pnpm --filter @open-design/contracts typecheck
 pnpm --filter @open-design/diagnostics typecheck
 pnpm --filter @open-design/diagnostics test
