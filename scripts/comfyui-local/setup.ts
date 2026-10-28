@@ -4,18 +4,25 @@
 // downloads only models whose licences permit commercial use, verifying each
 // file's sha256 before it is moved into place.
 //
+// Models come in sets (a diffusion model with its text encoder and VAE). By
+// default the script installs every default set that fits this machine's
+// memory; `--sets` picks sets by id and `--list` shows them.
+//
 // Usage:
+//   node scripts/comfyui-local/setup.ts --list
 //   node scripts/comfyui-local/setup.ts --dir <install-dir>
-//   node scripts/comfyui-local/setup.ts --dir <install-dir> --gpu cuda
+//   node scripts/comfyui-local/setup.ts --dir <install-dir> --sets z-image-turbo,flux2-klein-4b
 //   node scripts/comfyui-local/setup.ts --dir <install-dir> --models sdxl-base-1.0
+//   node scripts/comfyui-local/setup.ts --dir <install-dir> --gpu cuda
 //   node scripts/comfyui-local/setup.ts --dir <install-dir> --start --port 8188
 //
-// --gpu defaults to `mps` on Apple silicon and `cuda` on Linux. Requires git
-// and uv on PATH.
+// --gpu defaults to `mps` on Apple silicon and `cuda` on Linux. --memory-gb
+// overrides the detected memory used to choose sets. Requires git and uv on PATH.
 
 import { spawnSync, spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { createReadStream, existsSync, readFileSync, renameSync, rmSync } from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -25,14 +32,34 @@ interface ModelEntry {
   file: string;
   url: string;
   sha256: string;
+  bytes: number;
   license: string;
+  licenseUrl: string;
   commercialUse: boolean;
+}
+
+interface ModelSet {
+  id: string;
+  label: string;
+  models: string[];
+  /** Unified (Apple silicon) or GPU memory the set needs to run without heavy swapping. */
+  minMemoryGb: number;
   default?: boolean;
+}
+
+/** A custom node pinned to a commit; installed into custom_nodes/<name>. */
+interface CustomNode {
+  name: string;
+  repo: string;
+  commit: string;
+  license: string;
 }
 
 interface Manifest {
   comfyui: { repo: string; commit: string };
+  customNodes: CustomNode[];
   models: ModelEntry[];
+  sets: ModelSet[];
 }
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -55,11 +82,74 @@ async function sha256(file: string): Promise<string> {
   return hash.digest('hex');
 }
 
+function modelById(id: string): ModelEntry {
+  const model = manifest.models.find((m) => m.id === id);
+  if (!model) throw new Error(`unknown model id ${id}; known: ${manifest.models.map((m) => m.id).join(', ')}`);
+  return model;
+}
+
+function setBytes(set: ModelSet): number {
+  return set.models.reduce((sum, id) => sum + modelById(id).bytes, 0);
+}
+
+const gb = (bytes: number) => `${(bytes / 1e9).toFixed(1)} GB`;
+const memoryGb = Number(arg('memory-gb') ?? os.totalmem() / 2 ** 30);
+
+if (process.argv.includes('--list')) {
+  console.log(`Machine memory: ${memoryGb.toFixed(0)} GB\n`);
+  for (const set of manifest.sets) {
+    const fits = set.minMemoryGb <= memoryGb;
+    console.log(`${set.id}${set.default ? ' (default)' : ''}: ${set.label}`);
+    console.log(`  download ${gb(setBytes(set))}, needs ${set.minMemoryGb} GB memory${fits ? '' : ' — does not fit this machine'}`);
+    for (const id of set.models) {
+      const m = modelById(id);
+      console.log(`  - ${m.folder}/${m.file} (${gb(m.bytes)}, ${m.license})`);
+    }
+  }
+  process.exit(0);
+}
+
 const dir = arg('dir');
 if (!dir) {
-  console.error('usage: node scripts/comfyui-local/setup.ts --dir <install-dir> [--gpu mps|cuda|cpu] [--models id,id] [--start] [--port 8188]');
+  console.error(
+    'usage: node scripts/comfyui-local/setup.ts --dir <install-dir> [--sets id,id | --models id,id] [--gpu mps|cuda|cpu] [--memory-gb N] [--start] [--port 8188]\n' +
+      '       node scripts/comfyui-local/setup.ts --list',
+  );
   process.exit(2);
 }
+
+// Choose the models: explicit ids, explicit sets, or every default set that fits.
+let chosenSets: ModelSet[] = [];
+let wanted: string[];
+const modelsArg = arg('models');
+const setsArg = arg('sets');
+if (modelsArg) {
+  wanted = modelsArg.split(',');
+} else {
+  if (setsArg) {
+    chosenSets = setsArg.split(',').map((id) => {
+      const set = manifest.sets.find((s) => s.id === id);
+      if (!set) throw new Error(`unknown set ${id}; known: ${manifest.sets.map((s) => s.id).join(', ')}`);
+      if (set.minMemoryGb > memoryGb) {
+        console.warn(`warning: ${id} needs ${set.minMemoryGb} GB of memory; this machine has ${memoryGb.toFixed(0)} GB, so expect heavy swapping`);
+      }
+      return set;
+    });
+  } else {
+    chosenSets = manifest.sets.filter((s) => s.default && s.minMemoryGb <= memoryGb);
+    const skipped = manifest.sets.filter((s) => s.default && s.minMemoryGb > memoryGb);
+    for (const s of skipped) console.log(`skipping ${s.id}: needs ${s.minMemoryGb} GB of memory, this machine has ${memoryGb.toFixed(0)} GB`);
+  }
+  // Sets share files (FLUX.2 klein and Z-Image use the same Qwen3-4B text encoder).
+  wanted = [...new Set(chosenSets.flatMap((s) => s.models))];
+}
+// The licence gate runs before anything is downloaded.
+for (const id of wanted) {
+  const model = modelById(id);
+  if (!model.commercialUse) throw new Error(`${id} (${model.license}) does not permit commercial use`);
+}
+if (chosenSets.length) console.log(`Model sets: ${chosenSets.map((s) => s.id).join(', ')}`);
+
 const gpu = arg('gpu') ?? (process.platform === 'darwin' ? 'mps' : 'cuda');
 const root = path.resolve(dir, 'ComfyUI');
 const python = path.join(root, '.venv', 'bin', 'python');
@@ -75,11 +165,17 @@ const torchIndex = gpu === 'cuda' ? ['--index-url', 'https://download.pytorch.or
 run('uv', ['pip', 'install', '--python', python, 'torch', 'torchvision', 'torchaudio', ...torchIndex], root);
 run('uv', ['pip', 'install', '--python', python, '-r', 'requirements.txt'], root);
 
-const wanted = arg('models')?.split(',') ?? manifest.models.filter((m) => m.default).map((m) => m.id);
+for (const node of manifest.customNodes) {
+  const target = path.join(root, 'custom_nodes', node.name);
+  if (!existsSync(target)) run('git', ['clone', node.repo, target]);
+  run('git', ['fetch', '--quiet', 'origin', node.commit], target);
+  run('git', ['checkout', '--quiet', node.commit], target);
+  if (existsSync(path.join(target, 'requirements.txt'))) run('uv', ['pip', 'install', '--python', python, '-r', 'requirements.txt'], target);
+  console.log(`custom node ${node.name}: ${node.commit} (${node.license})`);
+}
+
 for (const id of wanted) {
-  const model = manifest.models.find((m) => m.id === id);
-  if (!model) throw new Error(`unknown model id ${id}; known: ${manifest.models.map((m) => m.id).join(', ')}`);
-  if (!model.commercialUse) throw new Error(`${id} (${model.license}) does not permit commercial use`);
+  const model = modelById(id);
   const dest = path.join(root, 'models', model.folder, model.file);
   if (existsSync(dest) && (await sha256(dest)) === model.sha256) {
     console.log(`${model.file}: present, sha256 ok`);
