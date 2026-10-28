@@ -58,6 +58,7 @@
       "suite://workspace-install",
       "apps/daemon/",
       "packages/agui-adapter/",
+      "packages/comfy-agent/",
       "packages/contracts/",
       "packages/diagnostics/",
       "packages/launcher-proto/",

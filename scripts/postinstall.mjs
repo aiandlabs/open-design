@@ -30,6 +30,7 @@ const localDevelopment = Object.freeze({
     "packages/launcher-proto",
     "packages/sidecar",
     "packages/diagnostics",
+    "packages/comfy-agent",
     "packages/dsh-runtime",
     "apps/daemon",
     "tools/dev",
