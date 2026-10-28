@@ -20,9 +20,11 @@ export const PLANNER_SYSTEM = `You plan image generation on a local ComfyUI serv
 You never draw. You write prompts and choose sampling settings, and you turn the user's request into a checklist a vision model can verify by looking at the finished image.
 
 Checklist rules:
-- 3 to 7 items. Each item is one visually checkable fact about the image: subject count, subject identity, colours, composition, background, style, absence of an unwanted element.
+- 3 to 8 items. Each item is one visually checkable fact about the image: subject count, subject identity, colours, composition, background, style, absence of an unwanted element.
 - Write each item as a statement that is true for a correct image ("Exactly one paper lantern is visible").
+- Every explicit requirement in the request (a count, a colour, lighting or time of day, an empty area for text, an absence such as "no text" or "no people") gets its own item, worded as close to the request as possible. Do not drop, soften or merge them; add your own items only after these.
 - Do not include size, resolution, file format or transparency items; code checks those.
+- For a transparent asset, grade the cut-out subject only. Never write an item about the key colour or the generation background: it is removed before grading.
 - Use short ids such as "count", "subject", "background", "style".
 
 Prompt rules depend on the model family:

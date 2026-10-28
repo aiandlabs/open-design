@@ -1,6 +1,6 @@
 import { createServer } from "node:net";
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { ComfyClient } from "../src/client.js";
 import {
@@ -195,8 +195,8 @@ describe("ComfyClient errors are reported as themselves", () => {
     expect(err).toBeInstanceOf(ComfyTimeoutError);
     expect((err as ComfyTimeoutError).timeoutMs).toBe(250);
     expect((err as ComfyTimeoutError).lastStatus).toBe("running");
-    await new Promise((r) => setTimeout(r, 50));
-    expect(fake.interrupts.length).toBeGreaterThan(0);
+    // The interrupt is sent after the timeout rejects; wait for it rather than for a fixed delay.
+    await vi.waitFor(() => expect(fake.interrupts.length).toBeGreaterThan(0), { timeout: 2000 });
   });
 
   it.each([true, false])("does not count queue waiting against the run deadline (websocket: %s)", async (ws) => {
