@@ -56,6 +56,7 @@ import { injectMotionSourcePlayer, isMotionVideoComposition, markMotionFrameRend
 // placeholder as the final result.
 
 import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { assertMediaDispatchAllowed, mediaLocalOnlyFromEnv } from './local-only.js';
 import { execFile as execFileCb, spawn } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
@@ -362,6 +363,12 @@ export async function generateMedia(args: {
   /** ComfyUI-only options (workflow graph, size, transparency, round limit). */
   comfy?: ComfyMediaOptions;
   workspaceId?: string;
+  /**
+   * Settings → "Local image generation only", as the caller resolved it.
+   * Omitted means the `OD_MEDIA_LOCAL_ONLY` process override, else ON: a
+   * caller that forgets to pass it gets the safe default, never hosted access.
+   */
+  localOnly?: boolean;
   onProviderRequestSettled?: (summary: ImageGenerationRequestSummary & { providerId: string }) => void;
   /**
    * Called once with the EXACT provider bytes that were just written, while
@@ -484,6 +491,18 @@ export async function generateMedia(args: {
       );
     }
   }
+
+  // Local image generation only: refuse a hosted image/video provider before
+  // any byte (prompt, reference image, project path) is prepared for it. The
+  // generate route checks the same policy up front for a synchronous 403; this
+  // is the dispatcher's own guarantee for every other caller.
+  await assertMediaDispatchAllowed({
+    projectRoot,
+    localOnly: args.localOnly ?? mediaLocalOnlyFromEnv() ?? true,
+    surface,
+    providerId: def.provider,
+    model: def.id,
+  });
 
   // Clamp registry-bound numeric inputs to their allowed buckets so a
   // hallucinated --length 9999999 doesn't reach a real provider as-is

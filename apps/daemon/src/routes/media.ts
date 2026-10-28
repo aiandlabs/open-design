@@ -18,6 +18,12 @@ import { formatMediaTaskDiagnostic } from '../media/diagnostics.js';
 import { findMediaModel, type MediaModel } from '../media/models.js';
 import { fetchVelaVideoModels } from '../media/vela.js';
 import { parseComfyMediaOptions } from '../media/comfyui.js';
+import {
+  MediaLocalOnlyError,
+  assertMediaDispatchAllowed,
+  buildMediaCatalog,
+  resolveMediaLocalOnlyState,
+} from '../media/local-only.js';
 import type { CloudVideoModelsResponse } from '@open-design/contracts';
 import type { ImageGenerationRequestSummary } from '../media/image-generation-retry.js';
 import type { RouteDeps } from '../server-context.js';
@@ -330,6 +336,33 @@ export function registerMediaRoutes(app: Express, ctx: RegisterMediaRoutesDeps) 
       return sendApiError(res, 403, denial.code, denial.message);
     }
 
+    // Local image generation only. Refused here, before a media task exists,
+    // so the caller gets a synchronous typed error (`od media generate` turns
+    // its code into `nextStep`). `generateMedia` enforces the same policy again
+    // for every other caller.
+    // An unreadable app-config resolves to the default (on), never to off.
+    const { localOnly } = resolveMediaLocalOnlyState(
+      await readAppConfig(RUNTIME_DATA_DIR).catch(() => null),
+    );
+    const policyProviderId = mediaProviderId(model);
+    try {
+      // An unknown model has no provider yet; generateMedia rejects it.
+      if (policyProviderId) {
+        await assertMediaDispatchAllowed({
+          projectRoot: PROJECT_ROOT,
+          localOnly,
+          surface,
+          providerId: policyProviderId,
+          model,
+        });
+      }
+    } catch (err) {
+      if (err instanceof MediaLocalOnlyError) {
+        return sendApiError(res, 403, err.code, err.message, { retryable: false });
+      }
+      throw err;
+    }
+
     /**
      * The dual of `attachLateOutputToRunMessage` below: hand the FAILURE back to
      * the turn that asked for it.
@@ -473,6 +506,7 @@ export function registerMediaRoutes(app: Express, ctx: RegisterMediaRoutesDeps) 
         image: req.body?.image,
         images: Array.isArray(req.body?.images) ? req.body.images : undefined,
         workspaceId,
+        localOnly,
         // Strong capture path (spec §5.1.1): freeze the provider's own bytes
         // the moment they land, so a later turn overwriting the same output
         // name can never rewrite this message's history. Bound to THIS run and
@@ -707,11 +741,16 @@ export function registerMediaRoutes(app: Express, ctx: RegisterMediaRoutesDeps) 
         return sendApiError(res, 503, 'MEDIA_CATALOG_UNAVAILABLE', 'Cloud video availability could not be verified; do not infer availability from the static catalogue.');
       }
     }
+    // Readiness-annotated catalogue. `view=agent` (what `od media models`
+    // requests) lists only the image/video models the local-only policy
+    // allows; the default `full` view keeps every model, marked
+    // `allowed: false` where refused, for Settings and diagnostics. Either
+    // way `default` only ever marks a configured, allowed model.
+    const view = req.query.view === 'agent' ? 'agent' : 'full';
+    const appConfig = await readAppConfig(RUNTIME_DATA_DIR).catch(() => null);
+    const catalog = await buildMediaCatalog({ projectRoot: PROJECT_ROOT, config: appConfig, view });
     res.json({
-      providers: MEDIA_PROVIDERS,
-      image: IMAGE_MODELS,
-      video: VIDEO_MODELS,
-      audio: AUDIO_MODELS_BY_KIND,
+      ...catalog,
       aspects: MEDIA_ASPECTS,
       videoLengthsSec: VIDEO_LENGTHS_SEC,
       audioDurationsSec: AUDIO_DURATIONS_SEC,

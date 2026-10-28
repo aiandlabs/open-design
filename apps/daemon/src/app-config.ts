@@ -21,8 +21,8 @@ import { readFileSync } from 'node:fs';
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { createHash, randomBytes } from 'node:crypto';
 import path from 'node:path';
-import type { OdNextRolloutMode, VisualCheckPrefs } from '@open-design/contracts';
-import { normalizeVisualCheckPrefs } from '@open-design/contracts';
+import type { MediaPolicyPrefs, OdNextRolloutMode, VisualCheckPrefs } from '@open-design/contracts';
+import { normalizeMediaPolicyPrefs, normalizeVisualCheckPrefs } from '@open-design/contracts';
 
 import { expandHomePrefix } from './home-expansion.js';
 
@@ -140,6 +140,10 @@ export interface AppConfigPrefs {
   // Settings → visual check: per-task `od visual-check` budget (0..3, 0 =
   // off) and the ai& vision model it calls.
   visualCheck?: VisualCheckPrefs | null;
+  // Settings → Media providers → "Local image generation only". Absent means
+  // on; see resolveMediaLocalOnly in @open-design/contracts and
+  // ./media/local-only.ts.
+  media?: MediaPolicyPrefs | null;
 }
 
 // Cap on how many recent working directories we remember. Keeps the picker's
@@ -167,6 +171,7 @@ const ALLOWED_KEYS: ReadonlySet<keyof AppConfigPrefs> = new Set([
   'odNextStrategyMode',
   'recentLinkedDirs',
   'visualCheck',
+  'media',
 ] as const);
 
 function configFile(dataDir: string): string {
@@ -693,6 +698,14 @@ function applyConfigValue(
     }
     return;
   }
+  if (key === 'media') {
+    // A cleared or malformed block falls back to the default (on); the write
+    // path refuses a malformed value before it gets here.
+    const validated = normalizeMediaPolicyPrefs(value);
+    if (validated !== undefined) target[key] = validated;
+    else delete target[key];
+    return;
+  }
   if (key === 'recentLinkedDirs') {
     if (Array.isArray(value)) {
       // Keep non-empty strings, trim, de-dupe preserving most-recent-first
@@ -935,6 +948,16 @@ export class InvalidAppConfigValueError extends Error {
  * change the new active default. Invalid legacy writes still fail explicitly.
  */
 function assertWritableControlValues(partial: Record<string, unknown>): void {
+  if (
+    Object.prototype.hasOwnProperty.call(partial, 'media')
+    && partial.media !== null
+    && normalizeMediaPolicyPrefs(partial.media) === undefined
+  ) {
+    throw new InvalidAppConfigValueError(
+      'media',
+      'media must be an object like {"localOnly": true} or null',
+    );
+  }
   if (!Object.prototype.hasOwnProperty.call(partial, 'odNextStrategyMode')) return;
   const value = partial.odNextStrategyMode;
   if (value === null || value === 'off' || value === 'observe' || value === 'active') return;

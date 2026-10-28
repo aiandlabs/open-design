@@ -1,6 +1,8 @@
 import type { Express } from 'express';
 import type { RouteDeps } from '../server-context.js';
 import { seedProviderIfMissing } from '../media/config.js';
+import { resolveMediaLocalOnlyState } from '../media/local-only.js';
+import { mediaLocalOnlyDenial } from '@open-design/contracts';
 import {
   buildLegacyMaxTokensParam,
   buildMaxCompletionTokensParam,
@@ -1839,6 +1841,22 @@ export function registerChatRoutes(app: Express, ctx: RegisterChatRoutesDeps) {
         };
       }
       const toolKind = fnName === 'generate_image' ? 'image' : fnName === 'generate_video' ? 'video' : 'speech';
+      // Local image generation only: these in-chat tools call the hosted
+      // provider directly (they never pass through generateMedia), so the
+      // policy is enforced here too. Speech is out of the policy's scope.
+      if (toolKind !== 'speech') {
+        const { localOnly } = resolveMediaLocalOnlyState(
+          await readAppConfig(ctx.paths.RUNTIME_DATA_DIR).catch(() => null),
+        );
+        const denial = mediaLocalOnlyDenial({
+          localOnly,
+          surface: toolKind,
+          providerId: opts.providerId,
+          model: `${opts.providerId} ${fnName}`,
+          comfyuiModel: null,
+        });
+        if (denial) return { ok: false, error: denial.message, kind: toolKind };
+      }
       let args: any = {};
       try {
         args = JSON.parse(call.function.arguments || '{}');

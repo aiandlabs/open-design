@@ -53,6 +53,10 @@ export function composeToolsDevEnv(
     // live release card into a test run, while a spec that means to exercise
     // release-channel behavior can still opt back in explicitly.
     OD_RELEASE_CHANNEL: E2E_TOOLS_DEV_RELEASE_CHANNEL,
+    // "Local image generation only" defaults to on in this fork; the e2e
+    // suites drive hosted media providers against mocks. A spec testing the
+    // policy passes OD_MEDIA_LOCAL_ONLY in `extraEnv`.
+    OD_MEDIA_LOCAL_ONLY: '0',
     ...extraEnv,
     // Preserve caller preloads; use a file URL so spaces in checkout paths do
     // not split NODE_OPTIONS. Descendant sidecars inherit the same isolation.

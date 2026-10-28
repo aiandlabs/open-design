@@ -47,6 +47,11 @@ process.env.OD_DATA_DIR = globalState[TEST_DATA_DIR_SYMBOL];
 // Keep unit tests from reading a developer's stored Vela profile and routing
 // Langfuse-shaped telemetry through the authenticated Vela sink by accident.
 process.env.OPEN_DESIGN_VELA_TELEMETRY ??= 'off';
+// "Local image generation only" defaults to on in this fork. The upstream
+// suites exercise hosted media providers against local stubs, so the process
+// override turns the policy off for them; local-only suites set or clear
+// OD_MEDIA_LOCAL_ONLY themselves.
+process.env.OD_MEDIA_LOCAL_ONLY ??= '0';
 
 // Publish/share endpoints shell out through OD_NODE_BIN + OD_BIN (dist/cli.js).
 // Build the CLI artifact once per vitest process so package tests do not depend
