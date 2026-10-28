@@ -4,7 +4,8 @@
 
 import { GraphEditError } from "./errors.js";
 import { comboOptions, hasClass, inputSpec } from "./object-info.js";
-import { buildImg2Img, buildInpaint, type GraphDoc } from "./graphs.js";
+import { isSplitFamily } from "./families.js";
+import { buildEdit, buildImg2Img, buildInpaint, chooseEditModel, detectFamily, modelFileOf, type GraphDoc } from "./graphs.js";
 import type { ApiWorkflow, ObjectInfo } from "./types.js";
 import { isLink } from "./validate.js";
 
@@ -25,7 +26,12 @@ export type GraphEdit =
   /** Inpaint `image` where `mask` (uploaded, white = repaint) is set. */
   | { op: "use_inpaint"; image: string; mask: string; denoise: number }
   /** Add a second, upscaled refinement pass. */
-  | { op: "upscale"; scale_by: number; method?: "latent" | "model"; model_name?: string; denoise?: number };
+  | { op: "upscale"; scale_by: number; method?: "latent" | "model"; model_name?: string; denoise?: number }
+  /**
+   * Replace the graph with an instruction edit of `image` (uploaded) by the
+   * installed edit-capable model, for example "remove the extra lanterns".
+   */
+  | { op: "edit_with_instruction"; image: string; instruction: string };
 
 export type GraphEditOp = GraphEdit["op"];
 
@@ -44,6 +50,7 @@ export const GRAPH_EDIT_OPS: readonly GraphEditOp[] = [
   "use_img2img",
   "use_inpaint",
   "upscale",
+  "edit_with_instruction",
 ];
 
 function clone(doc: GraphDoc): GraphDoc {
@@ -96,25 +103,71 @@ export function currentSize(doc: GraphDoc): { width: number; height: number } | 
   return { width: inputs.width, height: inputs.height };
 }
 
+type SamplingParam = "steps" | "cfg" | "sampler_name" | "scheduler" | "seed" | "denoise";
+
+/**
+ * The node and input that hold a sampling parameter. KSampler-style graphs
+ * keep everything on the sampler; SamplerCustomAdvanced graphs spread it over
+ * RandomNoise (seed), the guider (cfg), the sigmas node (steps, scheduler,
+ * denoise) and the sampler-select node. Returns undefined when this graph has
+ * no such setting (for example cfg on a BasicGuider).
+ */
+function samplingTarget(doc: GraphDoc, param: SamplingParam): { id: string; input: string } | undefined {
+  const g = doc.graph;
+  const sampler = doc.roles.sampler ? g[doc.roles.sampler] : undefined;
+  if (!sampler) return undefined;
+  if (sampler.class_type !== "SamplerCustomAdvanced") {
+    const input = param === "seed" ? seedInput(sampler.class_type) : param;
+    return input in sampler.inputs ? { id: doc.roles.sampler!, input } : undefined;
+  }
+  const at = (role: "noise" | "guider" | "sigmas" | "samplerSelect", input: string) => {
+    const id = doc.roles[role];
+    return id && g[id] && input in g[id]!.inputs && !isLink(g[id]!.inputs[input]) ? { id, input } : undefined;
+  };
+  switch (param) {
+    case "seed":
+      return at("noise", "noise_seed");
+    case "cfg":
+      return at("guider", "cfg");
+    case "steps":
+      return at("sigmas", "steps");
+    case "scheduler":
+      return at("sigmas", "scheduler");
+    case "denoise":
+      return at("sigmas", "denoise");
+    case "sampler_name":
+      return at("samplerSelect", "sampler_name");
+  }
+}
+
+function samplingValue(doc: GraphDoc, param: SamplingParam): unknown {
+  const t = samplingTarget(doc, param);
+  return t ? doc.graph[t.id]!.inputs[t.input] : undefined;
+}
+
+function textOf(node: { inputs: Record<string, unknown> } | undefined): unknown {
+  return node?.inputs.text ?? node?.inputs.prompt;
+}
+
 /** Sampling and text state of a doc, for traces and for the planner prompt. */
 export function describeDoc(doc: GraphDoc): Record<string, unknown> {
   const g = doc.graph;
-  const s = doc.roles.sampler ? g[doc.roles.sampler]?.inputs ?? {} : {};
   return {
     kind: doc.kind,
     family: doc.family,
-    checkpoint: doc.roles.checkpoint ? g[doc.roles.checkpoint]?.inputs.ckpt_name : undefined,
-    positive: doc.roles.positive ? g[doc.roles.positive]?.inputs.text : undefined,
-    negative: doc.roles.negative ? g[doc.roles.negative]?.inputs.text : undefined,
+    checkpoint: modelFileOf(doc) || undefined,
+    positive: doc.roles.positive ? textOf(g[doc.roles.positive]) : undefined,
+    negative: doc.roles.negative ? textOf(g[doc.roles.negative]) : undefined,
     size: currentSize(doc),
-    steps: s.steps,
-    cfg: s.cfg,
-    sampler: s.sampler_name,
-    scheduler: s.scheduler,
-    seed: s.seed ?? s.noise_seed,
-    denoise: s.denoise,
+    steps: samplingValue(doc, "steps"),
+    cfg: samplingValue(doc, "cfg"),
+    sampler: samplingValue(doc, "sampler_name") ?? (doc.roles.samplerSelect ? g[doc.roles.samplerSelect]?.class_type : undefined),
+    scheduler: samplingValue(doc, "scheduler"),
+    seed: samplingValue(doc, "seed"),
+    denoise: samplingValue(doc, "denoise"),
     loras: (doc.roles.loras ?? []).map((id) => ({ name: g[id]?.inputs.lora_name, strength: g[id]?.inputs.strength_model })),
     upscale: doc.roles.upscale ? true : false,
+    ...(doc.kind === "edit" && doc.roles.loadImage ? { editOf: g[doc.roles.loadImage]?.inputs.image } : {}),
   };
 }
 
@@ -130,11 +183,14 @@ export function applyEdit(doc: GraphDoc, edit: GraphEdit, info: ObjectInfo): Gra
       if ("text" in node.inputs) node.inputs.text = edit.text;
       if ("text_g" in node.inputs) node.inputs.text_g = edit.text;
       if ("text_l" in node.inputs) node.inputs.text_l = edit.text;
+      if ("prompt" in node.inputs && !("text" in node.inputs)) node.inputs.prompt = edit.text;
       return next;
     }
     case "set_size": {
       const id = sizeOwner(next);
-      if (!id) throw new GraphEditError(edit.op, "this graph has no latent or input-scale node that sets the size");
+      if (!id) {
+        throw new GraphEditError(edit.op, next.kind === "edit" ? "an edit graph takes its size from the input image" : "this graph has no latent or input-scale node that sets the size");
+      }
       const cls = g[id]!.class_type;
       checkNumber(info, cls, "width", edit.width, edit.op, true);
       checkNumber(info, cls, "height", edit.height, edit.op, true);
@@ -147,67 +203,106 @@ export function applyEdit(doc: GraphDoc, edit: GraphEdit, info: ObjectInfo): Gra
           g[extra]!.inputs.height = edit.height;
         }
       }
+      // Resolution-dependent schedule and shift nodes (Flux2Scheduler, ModelSamplingFlux) follow the size.
+      for (const node of Object.values(g)) {
+        if ((node.class_type === "Flux2Scheduler" || node.class_type === "ModelSamplingFlux") && typeof node.inputs.width === "number") {
+          node.inputs.width = edit.width;
+          node.inputs.height = edit.height;
+        }
+      }
       return next;
     }
     case "set_steps":
     case "set_cfg":
     case "set_denoise":
     case "set_seed": {
-      const id = need(next, "sampler", edit.op);
-      const cls = g[id]!.class_type;
-      const [input, value, integer] =
+      need(next, "sampler", edit.op);
+      const [param, value, integer] =
         edit.op === "set_steps" ? ["steps", edit.steps, true] as const
           : edit.op === "set_cfg" ? ["cfg", edit.cfg, false] as const
             : edit.op === "set_denoise" ? ["denoise", edit.denoise, false] as const
-              : [seedInput(cls), edit.seed, true] as const;
-      checkNumber(info, cls, input, value, edit.op, integer);
-      g[id]!.inputs[input] = value;
+              : ["seed", edit.seed, true] as const;
+      const target = samplingTarget(next, param);
+      if (!target) throw new GraphEditError(edit.op, `this ${next.family} graph has no ${param} setting`);
+      checkNumber(info, g[target.id]!.class_type, target.input, value, edit.op, integer);
+      g[target.id]!.inputs[target.input] = value;
       return next;
     }
     case "set_sampler":
     case "set_scheduler": {
-      const id = need(next, "sampler", edit.op);
-      const cls = g[id]!.class_type;
-      const input = edit.op === "set_sampler" ? "sampler_name" : "scheduler";
+      need(next, "sampler", edit.op);
+      const param = edit.op === "set_sampler" ? "sampler_name" : "scheduler";
       const value = edit.op === "set_sampler" ? edit.sampler_name : edit.scheduler;
-      checkCombo(info, cls, input, value, edit.op);
-      g[id]!.inputs[input] = value;
+      const target = samplingTarget(next, param);
+      if (!target) throw new GraphEditError(edit.op, `this ${next.family} graph has no ${param === "sampler_name" ? "sampler" : "scheduler"} setting`);
+      const cls = g[target.id]!.class_type;
+      checkCombo(info, cls, target.input, value, edit.op);
+      g[target.id]!.inputs[target.input] = value;
       for (const extra of next.roles.upscale ?? []) {
-        if (g[extra]?.class_type === cls) g[extra]!.inputs[input] = value;
+        if (g[extra]?.class_type === cls) g[extra]!.inputs[target.input] = value;
       }
       return next;
     }
     case "set_checkpoint": {
       const id = need(next, "checkpoint", edit.op);
-      checkCombo(info, g[id]!.class_type, "ckpt_name", edit.ckpt_name, edit.op);
-      g[id]!.inputs.ckpt_name = edit.ckpt_name;
+      const cls = g[id]!.class_type;
+      const input = "unet_name" in g[id]!.inputs ? "unet_name" : "ckpt_name";
+      checkCombo(info, cls, input, edit.ckpt_name, edit.op);
+      if (input === "unet_name" && detectFamily(edit.ckpt_name) !== next.family) {
+        throw new GraphEditError(edit.op, `${edit.ckpt_name} is not a ${next.family} model; this graph's text encoder and VAE belong to ${next.family}`);
+      }
+      g[id]!.inputs[input] = edit.ckpt_name;
       return next;
     }
     case "add_lora": {
-      requireClasses(info, edit.op, "LoraLoader");
-      checkCombo(info, "LoraLoader", "lora_name", edit.lora_name, edit.op);
+      const ckpt = need(next, "checkpoint", edit.op);
+      // Single-file checkpoints patch model and CLIP; split-loader models take a model-only LoRA.
+      const modelOnly = g[ckpt]!.class_type !== "CheckpointLoaderSimple";
+      const cls = modelOnly ? "LoraLoaderModelOnly" : "LoraLoader";
+      requireClasses(info, edit.op, cls);
+      checkCombo(info, cls, "lora_name", edit.lora_name, edit.op);
       const strengthModel = edit.strength_model ?? 0.8;
       const strengthClip = edit.strength_clip ?? strengthModel;
-      checkNumber(info, "LoraLoader", "strength_model", strengthModel, edit.op);
-      checkNumber(info, "LoraLoader", "strength_clip", strengthClip, edit.op);
-      const ckpt = need(next, "checkpoint", edit.op);
+      checkNumber(info, cls, "strength_model", strengthModel, edit.op);
+      if (!modelOnly) checkNumber(info, cls, "strength_clip", strengthClip, edit.op);
       const loraIds = next.roles.loras ?? [];
       if (loraIds.some((lid) => g[lid]?.inputs.lora_name === edit.lora_name)) {
         throw new GraphEditError(edit.op, `LoRA ${edit.lora_name} is already applied`);
       }
-      // Chain after the last LoRA (or the checkpoint) and re-point every consumer.
+      // Chain after the last LoRA (or the loader) and re-point every consumer.
       const prev = loraIds.length ? loraIds[loraIds.length - 1]! : ckpt;
       const id = uniqueId(g, "lora");
-      g[id] = {
-        class_type: "LoraLoader",
-        inputs: { model: [prev, 0], clip: [prev, 1], lora_name: edit.lora_name, strength_model: strengthModel, strength_clip: strengthClip },
-      };
-      rewireConsumers(g, id, prev, [0, 1]);
+      g[id] = modelOnly
+        ? { class_type: cls, inputs: { model: [prev, 0], lora_name: edit.lora_name, strength_model: strengthModel } }
+        : { class_type: cls, inputs: { model: [prev, 0], clip: [prev, 1], lora_name: edit.lora_name, strength_model: strengthModel, strength_clip: strengthClip } };
+      rewireConsumers(g, id, prev, modelOnly ? [0] : [0, 1]);
       next.roles.loras = [...loraIds, id];
       return next;
     }
+    case "edit_with_instruction": {
+      if (typeof edit.instruction !== "string" || !edit.instruction.trim()) throw new GraphEditError(edit.op, "instruction must be a non-empty string");
+      const model = chooseEditModel(info);
+      if (!model || !isSplitFamily(model.family) || !model.textEncoder || !model.vae) {
+        throw new GraphEditError(edit.op, "no instruction-editing model is installed on this server");
+      }
+      requireClasses(info, edit.op, "LoadImage");
+      const seed = Number(describeDoc(next).seed ?? 0);
+      return buildEdit({
+        family: model.family,
+        model: model.model,
+        textEncoder: model.textEncoder,
+        vae: model.vae,
+        image: edit.image,
+        instruction: edit.instruction.trim(),
+        seed: Number.isFinite(seed) ? seed : 0,
+        filenamePrefix: String(g[next.roles.save ?? ""]?.inputs.filename_prefix ?? "comfy-agent"),
+      });
+    }
     case "use_img2img":
     case "use_inpaint": {
+      if (isSplitFamily(next.family) || next.kind === "edit") {
+        throw new GraphEditError(edit.op, `${next.family} graphs do not support img2img or inpaint here; use edit_with_instruction`);
+      }
       requireClasses(info, edit.op, "LoadImage", "ImageScale", "VAEEncode");
       if (edit.op === "use_inpaint") requireClasses(info, edit.op, "LoadImageMask", "MaskToImage", "ImageToMask", "SetLatentNoiseMask");
       checkNumber(info, g[need(next, "sampler", edit.op)]!.class_type, "denoise", edit.denoise, edit.op);
@@ -243,6 +338,9 @@ export function applyEdit(doc: GraphDoc, edit: GraphEdit, info: ObjectInfo): Gra
     }
     case "upscale": {
       if (next.roles.upscale) throw new GraphEditError(edit.op, "graph already has an upscale pass");
+      if (isSplitFamily(next.family) || next.kind === "edit") {
+        throw new GraphEditError(edit.op, `${next.family} graphs have no second-pass upscale here; generate at the needed size instead`);
+      }
       const sampler = need(next, "sampler", edit.op);
       const decode = need(next, "decode", edit.op);
       const ckpt = need(next, "checkpoint", edit.op);
@@ -365,6 +463,8 @@ export function parseGraphEdit(raw: unknown): GraphEdit {
       return { op, image: str("image"), denoise: num("denoise") };
     case "use_inpaint":
       return { op, image: str("image"), mask: str("mask"), denoise: num("denoise") };
+    case "edit_with_instruction":
+      return { op, image: str("image"), instruction: str("instruction") };
     case "upscale": {
       const method = r.method === "model" || r.method === "latent" ? r.method : undefined;
       const d = optNum("denoise");

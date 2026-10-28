@@ -52,6 +52,10 @@ export function validateGraph(graph: ApiWorkflow, info: ObjectInfo): GraphIssue[
     }
     if (def.output_node) hasOutputNode = true;
     for (const spec of inputSpecs(def)) {
+      if (spec.type === AUTOGROW) {
+        checkAutogrow(graph, info, nodeId, node.class_type, node.inputs, spec.name, def, issues);
+        continue;
+      }
       const present = Object.prototype.hasOwnProperty.call(node.inputs, spec.name);
       const value = node.inputs[spec.name];
       if (!present || value === undefined || value === null) {
@@ -138,6 +142,55 @@ export function assertValidGraph(graph: ApiWorkflow, info: ObjectInfo): void {
 export function assertLocalOnly(graph: ApiWorkflow, info: ObjectInfo): void {
   const issues = validateGraph(graph, info).filter((i) => i.kind === "cloud-node");
   if (issues.length > 0) throw new GraphValidationError(issues);
+}
+
+const AUTOGROW = "COMFY_AUTOGROW_V3";
+
+/**
+ * Autogrow inputs (for example `images` on TextEncodeMingImageEdit) expand to
+ * dotted sockets in API format: `images.image_1`, `images.image_2`, ... The
+ * template names the allowed suffixes, the socket type and the minimum count.
+ */
+function checkAutogrow(
+  graph: ApiWorkflow,
+  info: ObjectInfo,
+  nodeId: string,
+  classType: string,
+  inputs: Record<string, unknown>,
+  name: string,
+  def: ObjectInfo[string],
+  issues: GraphIssue[],
+): void {
+  const raw = def.input.required?.[name] ?? def.input.optional?.[name];
+  const template = ((raw?.[1] ?? {}) as { template?: { input?: Record<string, Record<string, unknown[]>>; names?: string[]; prefix?: string; min?: number; max?: number } }).template ?? {};
+  const first = Object.values(template.input ?? {}).flatMap((group) => Object.values(group ?? {}))[0];
+  const socketType = String(first?.[0] ?? "*");
+  const allowed = template.names ?? (template.prefix ? Array.from({ length: template.max ?? 10 }, (_, i) => `${template.prefix}${i}`) : []);
+  const keys = Object.keys(inputs).filter((k) => k.startsWith(`${name}.`));
+  for (const key of keys) {
+    const suffix = key.slice(name.length + 1);
+    if (allowed.length && !allowed.includes(suffix)) {
+      issues.push({ nodeId, classType, input: key, kind: "bad-link", message: `"${key}" is not one of ${name}.{${allowed.join(",")}}` });
+      continue;
+    }
+    const value = inputs[key];
+    if (!isLink(value)) {
+      issues.push({ nodeId, classType, input: key, kind: "bad-type", message: `expects a ${socketType} link, got an inline value` });
+      continue;
+    }
+    const src = graph[String(value[0])];
+    if (!src) {
+      issues.push({ nodeId, classType, input: key, kind: "bad-link", message: `links to node "${String(value[0])}", which is not in the graph` });
+      continue;
+    }
+    const outType = info[src.class_type]?.output[value[1]];
+    if (outType !== undefined && !typesCompatible(outType, socketType)) {
+      issues.push({ nodeId, classType, input: key, kind: "link-type", message: `expects ${socketType} but is linked to ${src.class_type} output ${value[1]} (${outType})` });
+    }
+  }
+  if (keys.length < (template.min ?? 0)) {
+    issues.push({ nodeId, classType, input: name, kind: "missing-input", message: `needs at least ${template.min} ${name} input(s)` });
+  }
 }
 
 function typesCompatible(output: string, input: string): boolean {

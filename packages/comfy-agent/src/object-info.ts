@@ -1,3 +1,4 @@
+import { installedSplitModels, type SplitModelSet } from "./families.js";
 import type { ObjectInfo, ObjectInfoInputSpec, ObjectInfoNode } from "./types.js";
 
 // Input types that ComfyUI renders as widgets (values stored inline) rather
@@ -90,9 +91,33 @@ export function hasClass(info: ObjectInfo, classType: string): boolean {
   return Object.prototype.hasOwnProperty.call(info, classType);
 }
 
+/**
+ * Complete split-loader model sets (diffusion model + text encoder + VAE,
+ * plus the node classes their graphs need) installed on this server, in
+ * preference order.
+ */
+export function installedModelSets(info: ObjectInfo): SplitModelSet[] {
+  return installedSplitModels(
+    {
+      diffusionModels: comboOptions(info, "UNETLoader", "unet_name"),
+      textEncoders: comboOptions(info, "CLIPLoader", "clip_name"),
+      vaes: comboOptions(info, "VAELoader", "vae_name"),
+    },
+    (classes) => classes.every((c) => hasClass(info, c)),
+  );
+}
+
 /** Summary used by `comfy_inspect` and by the planner prompt. */
 export type ServerCapabilities = {
   checkpoints: string[];
+  /** Files in models/diffusion_models (split-loader families load these with UNETLoader). */
+  diffusionModels: string[];
+  /** Complete split-loader model sets, strongest first. */
+  modelSets: SplitModelSet[];
+  /** What a base graph uses when no model is named: the first model set, else an SDXL checkpoint. */
+  defaultModel: { family: string; model: string } | null;
+  /** The model that runs instruction edits, when one is installed. */
+  editModel: { family: string; model: string } | null;
   loras: string[];
   upscaleModels: string[];
   samplers: string[];
@@ -102,6 +127,8 @@ export type ServerCapabilities = {
     txt2img: boolean;
     img2img: boolean;
     inpaint: boolean;
+    /** Instruction-based editing ("make the background white") with an edit-capable model. */
+    edit: boolean;
     lora: boolean;
     latentUpscale: boolean;
     modelUpscale: boolean;
@@ -113,9 +140,18 @@ export function summarizeCapabilities(info: ObjectInfo): ServerCapabilities {
   const upscaleModels = comboOptions(info, "UpscaleModelLoader", "model_name");
   const loras = comboOptions(info, "LoraLoader", "lora_name");
   const checkpoints = comboOptions(info, "CheckpointLoaderSimple", "ckpt_name");
-  const txt2img = has("CheckpointLoaderSimple", "CLIPTextEncode", "EmptyLatentImage", "KSampler", "VAEDecode", "SaveImage") && checkpoints.length > 0;
+  const modelSets = installedModelSets(info);
+  const ckptTxt2img = has("CheckpointLoaderSimple", "CLIPTextEncode", "EmptyLatentImage", "KSampler", "VAEDecode", "SaveImage") && checkpoints.length > 0;
+  const txt2img = ckptTxt2img || modelSets.length > 0;
+  const sdxl = checkpoints.find((c) => /(sdxl|sd_xl|xl)/i.test(c)) ?? checkpoints[0];
+  const first = modelSets[0];
+  const editSet = modelSets.find((m) => m.edit);
   return {
     checkpoints,
+    diffusionModels: comboOptions(info, "UNETLoader", "unet_name"),
+    modelSets,
+    defaultModel: first ? { family: first.family, model: first.model } : ckptTxt2img && sdxl ? { family: "checkpoint", model: sdxl } : null,
+    editModel: editSet ? { family: editSet.family, model: editSet.model } : null,
     loras,
     upscaleModels,
     samplers: comboOptions(info, "KSampler", "sampler_name"),
@@ -123,10 +159,12 @@ export function summarizeCapabilities(info: ObjectInfo): ServerCapabilities {
     nodeCount: Object.keys(info).length,
     supports: {
       txt2img,
-      img2img: txt2img && has("LoadImage", "VAEEncode"),
-      inpaint: txt2img && has("LoadImage", "VAEEncode", "SetLatentNoiseMask") && (has("LoadImageMask") || has("ImageToMask")),
-      lora: txt2img && has("LoraLoader") && loras.length > 0,
-      latentUpscale: txt2img && has("LatentUpscaleBy"),
+      // img2img, inpaint and LoRAs on the checkpoint path; split families edit with instructions instead.
+      img2img: ckptTxt2img && has("LoadImage", "VAEEncode"),
+      inpaint: ckptTxt2img && has("LoadImage", "VAEEncode", "SetLatentNoiseMask") && (has("LoadImageMask") || has("ImageToMask")),
+      edit: !!editSet,
+      lora: ckptTxt2img && has("LoraLoader") && loras.length > 0,
+      latentUpscale: ckptTxt2img && has("LatentUpscaleBy"),
       modelUpscale: has("UpscaleModelLoader", "ImageUpscaleWithModel", "ImageScale", "VAEEncode") && upscaleModels.length > 0,
     },
   };
