@@ -23,7 +23,7 @@ export function renderVisualCheckBudgetRule(rounds: number): string {
     `After a substantive visual change to an HTML file, run \`"$OD_NODE_BIN" "$OD_BIN" visual-check <file> --project "$OD_PROJECT_ID" --json\` (add \`--brief "<one-line brief>"\` when the request has specific visual requirements, and \`--viewport both\` when the design must work on phones).`,
     'The command renders the file and a vision model grades the picture. It returns a verdict and, for each requirement, pass or fail, the evidence, and a repair hint.',
     `Run it at most ${times} per task. When items fail, fix the failing items in the file, then run it again only if budget remains. Stop when the verdict is pass or the budget is used.`,
-    'Do not launch your own browser or take your own screenshots. If the command itself fails, do not retry it; continue from your static reading of the file.',
+    'Do not launch your own browser or take your own screenshots. If the command itself fails, run at most one diagnostic, then continue from your static reading of the file; a failed command does not count as a check.',
   ].join(' ');
 }
 

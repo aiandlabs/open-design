@@ -5,7 +5,11 @@ import type { OdNextStrategyRequestRecipeV2 } from '@open-design/contracts';
 import { renderSlimCoreCharter, SLIM_ONE_RENDER_BUDGET_RULE } from '../../src/prompts/core-slim.js';
 import { ONE_RENDER_BUDGET_BULLET, renderOfficialDesignerPrompt } from '../../src/prompts/official-system.js';
 import { composeSystemPrompt, type ComposeInput } from '../../src/prompts/system.js';
-import { applyVisualCheckBudget } from '../../src/prompts/visual-check-budget.js';
+import {
+  applyVisualCheckBudget,
+  CLASSIC_VISUAL_CHECK_REWRITES,
+  SLIM_VISUAL_CHECK_REWRITES,
+} from '../../src/prompts/visual-check-budget.js';
 
 // The exact one-render rules as they read before the visual check feature.
 // Pinned as literals so moving them into named constants cannot change a byte.
@@ -80,12 +84,44 @@ describe('visual check rounds > 0 swaps the one-render rule', () => {
     expect(prompt).toContain('Run it at most 3 times per task.');
   });
 
-  it('only the budget rule changes', () => {
-    const input = SCENARIOS[1]![1];
-    const before = composeSystemPrompt(input);
-    const after = composeSystemPrompt({ ...input, visualCheckRounds: 1 });
-    const rule = after.split('\n').find((line) => line.includes('Visual check budget'))!;
-    expect(after.replace(rule, SLIM_BUDGET_ON_MAIN)).toBe(before);
+  it('every neighbouring sentence it rewrites exists verbatim in its charter', () => {
+    const classic = renderOfficialDesignerPrompt('filesystem');
+    const slim = renderSlimCoreCharter('filesystem');
+    for (const [from] of CLASSIC_VISUAL_CHECK_REWRITES) expect(classic).toContain(from);
+    for (const [from] of SLIM_VISUAL_CHECK_REWRITES) expect(slim).toContain(from);
+  });
+
+  it.each([
+    ['classic', 0],
+    ['slim', 1],
+  ] as const)('%s: no one-render or render-only-when-necessary wording survives', (_label, index) => {
+    const prompt = composeSystemPrompt({ ...SCENARIOS[index]![1], visualCheckRounds: 2 });
+    for (const stale of [
+      'ONE rendered look',
+      'verify once before you ship',
+      'One render check is the budget',
+      'Render at most once per task',
+      'Render only when static code review',
+      'only when necessary',
+      'one-render budget',
+    ]) {
+      expect(prompt).not.toContain(stale);
+    }
+  });
+
+  it('only the budget rule and its rewritten neighbours change', () => {
+    for (const [index, rewrites, pinned] of [
+      [0, CLASSIC_VISUAL_CHECK_REWRITES, CLASSIC_BUDGET_ON_MAIN],
+      [1, SLIM_VISUAL_CHECK_REWRITES, SLIM_BUDGET_ON_MAIN],
+    ] as const) {
+      const input = SCENARIOS[index]![1];
+      const before = composeSystemPrompt(input);
+      let after = composeSystemPrompt({ ...input, visualCheckRounds: 1 });
+      const rule = after.split('\n').find((line) => line.includes('Visual check budget'))!;
+      after = after.replace(rule, pinned);
+      for (const [from, to] of rewrites) after = after.replace(to, from);
+      expect(after).toBe(before);
+    }
   });
 
   it('text-artifact runs and prompts without a design charter are untouched', () => {
