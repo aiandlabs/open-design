@@ -51,7 +51,14 @@ export type ArmStats = {
   codeCheckPassRate: number | null;
   rounds: Dist;
   wallSeconds: Dist;
+  /** Wall time minus time queued behind other ComfyUI clients (rows with history timing only). */
+  wallExclQueueSeconds: Dist;
   comfySeconds: Dist;
+  /** ComfyUI execution time from server history (rows with history timing only). */
+  comfyExecSeconds: Dist;
+  /** Total time queued behind other ComfyUI clients. */
+  queueWaitSecondsTotal: number;
+  stopReasons: Record<string, number>;
   costUsd: Dist;
   totalCostUsd: number;
 };
@@ -72,7 +79,15 @@ export function armStats(arm: Arm, rows: ResultRow[]): ArmStats {
     codeCheckPassRate: rate(scored.map((x) => x.s.codePass)),
     rounds: dist(ok.map((r) => r.rounds)),
     wallSeconds: dist(mine.map((r) => r.wallMs / 1000)),
+    wallExclQueueSeconds: dist(ok.filter((r) => r.comfyQueueMs !== undefined).map((r) => (r.wallMs - r.comfyQueueMs!) / 1000)),
     comfySeconds: dist(ok.map((r) => r.comfyMs / 1000)),
+    comfyExecSeconds: dist(ok.filter((r) => r.comfyExecMs !== undefined).map((r) => r.comfyExecMs! / 1000)),
+    queueWaitSecondsTotal: ok.reduce((s, r) => s + (r.comfyQueueMs ?? 0), 0) / 1000,
+    stopReasons: mine.reduce<Record<string, number>>((acc, r) => {
+      const k = r.status === "error" ? "error" : (r.stopReason ?? "unknown");
+      acc[k] = (acc[k] ?? 0) + 1;
+      return acc;
+    }, {}),
     costUsd: dist(mine.map((r) => r.llm.costUsd)),
     totalCostUsd: mine.reduce((s, r) => s + r.llm.costUsd, 0),
   };
@@ -222,13 +237,14 @@ const signed = (v: number | null) => (v === null ? "–" : `${v >= 0 ? "+" : ""}
 
 function armTable(stats: ArmStats[]): string[] {
   return [
-    "| Arm | Rows | Scored | Gen errors | Judge errors | Full pass | Mean item pass | Code checks pass | Rounds mean / median | Wall s mean / median | ComfyUI s mean / median | LLM cost mean / median | LLM cost total |",
-    "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
+    "| Arm | Rows | Scored | Gen errors | Judge errors | Full pass | Mean item pass | Code checks pass | Rounds mean / median | Wall s mean / median | Wall s excl. queue mean / median | ComfyUI exec s mean / median | LLM cost mean / median | LLM cost total | Stop reasons |",
+    "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|",
     ...stats.map(
       (s) =>
         `| ${ARM_LABEL[s.arm]} | ${s.rows} | ${s.scored} | ${s.generationErrors} | ${s.judgeErrors} | ${pct(s.fullPassRate)} | ${pct(s.meanItemPassRate)} | ${pct(s.codeCheckPassRate)} | ` +
-        `${num(s.rounds.mean, 2)} / ${num(s.rounds.median, 1)} | ${num(s.wallSeconds.mean)} / ${num(s.wallSeconds.median)} | ${num(s.comfySeconds.mean)} / ${num(s.comfySeconds.median)} | ` +
-        `${usd(s.costUsd.mean)} / ${usd(s.costUsd.median)} | ${usd(s.totalCostUsd)} |`,
+        `${num(s.rounds.mean, 2)} / ${num(s.rounds.median, 1)} | ${num(s.wallSeconds.mean)} / ${num(s.wallSeconds.median)} | ` +
+        `${num(s.wallExclQueueSeconds.mean)} / ${num(s.wallExclQueueSeconds.median)} | ${num(s.comfyExecSeconds.mean)} / ${num(s.comfyExecSeconds.median)} | ` +
+        `${usd(s.costUsd.mean)} / ${usd(s.costUsd.median)} | ${usd(s.totalCostUsd)} | ${Object.entries(s.stopReasons).map(([k, v]) => `${k} ${v}`).join(", ")} |`,
     ),
   ];
 }
@@ -244,7 +260,9 @@ export function renderSummaryMarkdown(s: Summary): string {
     "",
     "Definitions: *item pass* is the share of the task's 5 fixed checklist items the judge passed. *Full pass* is all 5 items plus the code checks " +
       "(exact size; alpha and key residue when the task needs transparency). A generation error scores 0 and no full pass; a row the judge could not grade is left out. " +
-      "Cost is the arm's own planner and critic LLM cost; judge cost is listed separately.",
+      "Cost is the arm's own planner and critic LLM cost; judge cost is listed separately. " +
+      "*Wall s* is measured by the runner and includes time queued behind other clients of the same ComfyUI server; *excl. queue* subtracts that wait " +
+      "(ComfyUI time seen by the client minus execution time from the server's history timestamps). *ComfyUI exec s* is execution time only.",
     "",
     "## Per arm",
     "",
@@ -257,6 +275,8 @@ export function renderSummaryMarkdown(s: Summary): string {
     out.push(`### ${g.group}`, "", ...armTable(g.perArm), "");
   }
   out.push(
+    `Time queued behind other ComfyUI clients: ${s.perArm.map((a) => `${ARM_LABEL[a.arm]} ${num(a.queueWaitSecondsTotal, 0)} s`).join(", ")}.`,
+    "",
     "## Paired comparisons",
     "",
     "Per task (mean over seeds), second arm minus first. Sign test: exact two-sided binomial on improved vs regressed, ties dropped. CI: 95% percentile bootstrap over tasks (10,000 resamples) of the mean difference.",

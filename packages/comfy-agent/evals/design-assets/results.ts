@@ -40,7 +40,14 @@ export type ResultRow = {
   rounds: number;
   stopReason?: string;
   wallMs: number;
+  /** Time inside ComfyUI runs as the client saw it: queue wait plus execution. */
   comfyMs: number;
+  /** ComfyUI prompt ids, in round order. */
+  promptIds?: string[];
+  /** Execution time from ComfyUI history timestamps (excludes queue wait). */
+  comfyExecMs?: number;
+  /** comfyMs - comfyExecMs: time spent waiting behind other clients' jobs. */
+  comfyQueueMs?: number;
   /** LLM use by the arm itself (planner + critic); the judge is not included. */
   llm: { inputTokens: number; outputTokens: number; costUsd: number; estimatedCostUsd: number; reportedCostUsd: number | null };
   /** Every deterministic check the loop computes. */
@@ -102,15 +109,18 @@ export type Job = { taskId: string; arm: Arm; seed: number };
 
 /**
  * Jobs still to generate. Rows already present are skipped; with
- * `retryFailed`, rows whose generation errored are run again. A row with an
+ * `retryFailed`, rows whose generation errored are run again; with
+ * `rerunStopReasons`, rows whose loop stopped for one of those reasons (for
+ * example "time-limit" while the shared GPU was busy) are run again. A row with an
  * image but a failed or missing grade is not regenerated: see {@link judgesToRedo}.
  */
-export function pendingJobs(jobs: Job[], existing: ResultRow[], options: { retryFailed?: boolean } = {}): Job[] {
+export function pendingJobs(jobs: Job[], existing: ResultRow[], options: { retryFailed?: boolean; rerunStopReasons?: string[] } = {}): Job[] {
   const done = new Map(existing.map((r) => [rowKey(r), r]));
   return jobs.filter((j) => {
     const r = done.get(rowKey(j));
     if (!r) return true;
-    return Boolean(options.retryFailed) && r.status === "error";
+    if (options.retryFailed && r.status === "error") return true;
+    return Boolean(r.stopReason && options.rerunStopReasons?.includes(r.stopReason));
   });
 }
 

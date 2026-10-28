@@ -23,6 +23,7 @@ import {
 } from "../evals/design-assets/results.js";
 import { bootstrapMeanCi, cohensKappa, comparePaired, median, quantile, signTest } from "../evals/design-assets/stats.js";
 import { armStats, judgeAgreement, pairedReport, renderSummaryMarkdown, scoreRow, summarize } from "../evals/design-assets/summary.js";
+import { executionMs } from "../evals/design-assets/timing.js";
 import { DEFAULT_RELIABILITY_SUBSET, loadTasks, parseTasks, selectTasks, type EvalTask } from "../evals/design-assets/tasks.js";
 import { AiandClient } from "../src/llm.js";
 
@@ -188,6 +189,13 @@ describe("results file and resumability", () => {
     expect(pendingJobs(jobs, existing, { retryFailed: true }).map((j) => `${j.arm}${j.seed}`)).toEqual(["raw2", "plan1", "plan2", "loop1", "loop2"]);
   });
 
+  it("reruns rows that stopped for a listed reason", () => {
+    const existing = [row({ arm: "loop", passes: ALL, stopReason: "time-limit" }), row({ arm: "plan", passes: ALL, stopReason: "max-rounds" })];
+    const jobs = (["plan", "loop"] as const).map((arm) => ({ taskId: "t1", arm, seed: 1 }));
+    expect(pendingJobs(jobs, existing)).toEqual([]);
+    expect(pendingJobs(jobs, existing, { rerunStopReasons: ["time-limit"] }).map((j) => j.arm)).toEqual(["loop"]);
+  });
+
   it("redoes only missing or failed grades on generated rows", () => {
     const ok = row({ arm: "raw", passes: ALL, judgeViewPath: "/x.png" });
     expect(judgesToRedo(ok, false, true)).toEqual([]);
@@ -319,6 +327,29 @@ describe("scoring and aggregation", () => {
     for (const h of ["## Per arm", "## Per group", "### hero", "## Paired comparisons", "## Judge agreement", "## Errors"]) expect(md).toContain(h);
     expect(md).toContain("| C loop vs A raw | item pass rate | 3 | 2 | 0 | 1 |");
     expect(md).toContain("| A raw | 3 | 3 | 0 | 0 | 33.3% |");
+  });
+});
+
+describe("ComfyUI timing", () => {
+  it("reads execution time from history timestamps, excluding queue wait", () => {
+    const entry = (messages: [string, Record<string, unknown>][]) => ({ outputs: {}, status: { messages } });
+    expect(executionMs(entry([["execution_start", { timestamp: 1000 }], ["execution_cached", { timestamp: 1001 }], ["execution_success", { timestamp: 31_000 }]]))).toBe(30_000);
+    expect(executionMs(entry([["execution_start", { timestamp: 1000 }], ["execution_error", { timestamp: 4000 }]]))).toBe(3000);
+    expect(executionMs(entry([["execution_start", { timestamp: 1000 }]]))).toBeUndefined();
+    expect(executionMs(null)).toBeUndefined();
+  });
+
+  it("reports wall time without queue wait and stop reasons per arm", () => {
+    const rows = [
+      row({ arm: "loop", passes: ALL, wallMs: 100_000, comfyMs: 90_000, comfyExecMs: 30_000, comfyQueueMs: 60_000, stopReason: "time-limit" }),
+      row({ taskId: "t2", arm: "loop", passes: ALL, wallMs: 50_000, comfyMs: 40_000, comfyExecMs: 40_000, comfyQueueMs: 0, stopReason: "all-pass" }),
+    ];
+    const s = armStats("loop", rows);
+    expect(s.wallExclQueueSeconds.mean).toBe(45);
+    expect(s.comfyExecSeconds.mean).toBe(35);
+    expect(s.queueWaitSecondsTotal).toBe(60);
+    expect(s.stopReasons).toEqual({ "time-limit": 1, "all-pass": 1 });
+    expect(renderSummaryMarkdown(summarize(rows))).toContain("Time queued behind other ComfyUI clients: C loop 60 s.");
   });
 });
 

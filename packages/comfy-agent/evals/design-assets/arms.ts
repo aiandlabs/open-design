@@ -124,7 +124,7 @@ async function runRaw(task: EvalTask, seed: number, ctx: ArmContext, signal: Abo
     JSON.stringify({ arm: "raw", request: req, checkpoint, generationSize: gen, sampling, keyColor: post.key, graph: doc.graph, promptId: run.promptId, comfyMs, wallMs, checks }, null, 2),
   );
   return {
-    row: { ...baseRow(task, "raw", seed), status: "ok", rounds: 1, stopReason: "single-shot", wallMs, comfyMs, checks, imagePath, tracePath },
+    row: { ...baseRow(task, "raw", seed), status: "ok", rounds: 1, stopReason: "single-shot", wallMs, comfyMs, promptIds: [run.promptId], checks, imagePath, tracePath },
     image: post.image,
   };
 }
@@ -163,6 +163,7 @@ async function runLoop(arm: "plan" | "loop", task: EvalTask, seed: number, ctx: 
       stopReason: res.trace.stopReason,
       wallMs: Date.now() - started,
       comfyMs: res.trace.rounds.reduce((s, r) => s + r.timing.comfyMs, 0),
+      promptIds: res.trace.rounds.map((r) => r.generation?.promptId).filter((p): p is string => typeof p === "string"),
       llm: { inputTokens: t.inputTokens, outputTokens: t.outputTokens, costUsd: t.costUsd, estimatedCostUsd: t.estimatedCostUsd, reportedCostUsd: t.reportedCostUsd },
       checks,
       imagePath,

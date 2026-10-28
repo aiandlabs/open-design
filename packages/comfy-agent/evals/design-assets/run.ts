@@ -21,6 +21,7 @@ import { runArm } from "./arms.js";
 import { DEFAULT_JUDGE2_MODEL, DEFAULT_JUDGE_MODEL, judgeImage, judgeView } from "./judge.js";
 import { ARMS, appendResult, judgesToRedo, pendingJobs, readResults, type Arm, type Job, type ResultRow } from "./results.js";
 import { writeReports } from "./report.js";
+import { comfyTiming } from "./timing.js";
 import { DEFAULT_RELIABILITY_SUBSET, loadTasks, selectTasks, TASKS_PATH, type EvalTask } from "./tasks.js";
 
 const HELP = `Usage: eval:design-assets --out <dir> [options]
@@ -40,6 +41,8 @@ const HELP = `Usage: eval:design-assets --out <dir> [options]
   --task-timeout-min <n>  deadline per task x arm (default 25)
   --judge-concurrency <n> judge calls in flight while the next image generates (default 4)
   --retry-failed          rerun rows whose generation failed
+  --rerun-stop-reasons r,r  rerun rows whose loop stopped for these reasons (e.g. time-limit,
+                          after other clients kept the shared ComfyUI busy)
   --report-only           only rebuild summary and contact sheets from results.jsonl
   --tasks-file <path>     task set (default evals/design-assets/tasks.json)
 `;
@@ -84,6 +87,7 @@ async function main(): Promise<void> {
       "task-timeout-min": { type: "string" },
       "judge-concurrency": { type: "string" },
       "retry-failed": { type: "boolean" },
+      "rerun-stop-reasons": { type: "string" },
       "report-only": { type: "boolean" },
       "tasks-file": { type: "string" },
       help: { type: "boolean" },
@@ -162,18 +166,23 @@ async function main(): Promise<void> {
 
     log(`config: planner ${cfg.plannerModel}, critic ${cfg.criticModel}, judge ${judgeModel}, judge2 ${judge2Model ?? "none"}, shape ${shape}, comfy ${cfg.comfyUrl}`);
 
-    // Redo missing or failed grades on rows that already have an image.
+    // Rows that already have an image: fill in ComfyUI execution time from the
+    // server history if it is missing, and redo missing or failed grades.
     const existing = await readResults(resultsFile);
     const inFlight: Promise<void>[] = [];
     const selected = new Set(tasks.map((t) => t.id));
     for (const row of existing) {
       if (!selected.has(row.taskId)) continue;
-      const redo = judgesToRedo(row, subset.has(row.taskId), Boolean(judge2Model));
-      if (redo.length) inFlight.push(gradeAndWrite(row, redo));
+      const timing = row.status === "ok" && row.comfyExecMs === undefined ? await comfyTiming(comfy, row) : undefined;
+      const current = timing ? { ...row, ...timing } : row;
+      const redo = judgesToRedo(current, subset.has(row.taskId), Boolean(judge2Model));
+      if (redo.length) inFlight.push(gradeAndWrite(current, redo));
+      else if (timing) await write(current);
     }
 
+    const rerunStopReasons = list(values["rerun-stop-reasons"]) ?? [];
     const jobs: Job[] = tasks.flatMap((t) => seeds.flatMap((seed) => arms.map((arm) => ({ taskId: t.id, arm, seed }))));
-    const todo = pendingJobs(jobs, existing, { retryFailed: Boolean(values["retry-failed"]) });
+    const todo = pendingJobs(jobs, existing, { retryFailed: Boolean(values["retry-failed"]), rerunStopReasons });
     log(`${jobs.length} jobs, ${jobs.length - todo.length} already done, ${todo.length} to run`);
     let stopping = false;
     process.once("SIGINT", () => {
@@ -203,13 +212,18 @@ async function main(): Promise<void> {
           if (!/step \d+\/\d+/.test(m)) log(`  ${m}`);
         },
       });
-      const row: ResultRow = { ...out.row, finishedAt: new Date().toISOString() };
+      let row: ResultRow = { ...out.row, finishedAt: new Date().toISOString() };
+      if (row.status === "ok") {
+        const timing = await comfyTiming(comfy, row);
+        if (timing) row = { ...row, ...timing };
+      }
       if (row.status === "error") {
         log(`  failed: ${row.error?.class}: ${row.error?.message}`);
         await write(row);
         continue;
       }
-      log(`  generated in ${(row.wallMs / 1000).toFixed(0)} s, ${row.rounds} round(s), $${row.llm.costUsd.toFixed(4)}`);
+      const queued = row.comfyQueueMs ? `, ${(row.comfyQueueMs / 1000).toFixed(0)} s queued behind other ComfyUI clients` : "";
+      log(`  generated in ${(row.wallMs / 1000).toFixed(0)} s${queued}, ${row.rounds} round(s), ${row.stopReason ?? ""}, $${row.llm.costUsd.toFixed(4)}`);
       row.judgeViewPath = path.join(workDir, "judge-view.png");
       await writeFile(row.judgeViewPath, judgeView(out.image!, task.transparent));
       // Grading overlaps with the next generation.
