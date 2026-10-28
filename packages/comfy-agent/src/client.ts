@@ -11,7 +11,7 @@ import {
   ComfyValidationError,
   type ComfyNodeError,
 } from "./errors.js";
-import { assertValidGraph } from "./validate.js";
+import { assertLocalOnly, assertValidGraph } from "./validate.js";
 import type {
   ApiWorkflow,
   HistoryEntry,
@@ -232,9 +232,9 @@ export class ComfyClient {
    * websocket the history poll alone drives completion.
    */
   async run(graph: ApiWorkflow, options: RunOptions = {}): Promise<RunResult> {
-    if (options.validate !== false) {
-      assertValidGraph(graph, await this.getObjectInfo());
-    }
+    const info = await this.getObjectInfo();
+    if (options.validate !== false) assertValidGraph(graph, info);
+    else assertLocalOnly(graph, info);
     const started = Date.now();
     const ws = await this.openSocket();
     try {

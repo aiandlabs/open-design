@@ -97,7 +97,9 @@ for (const id of wanted) {
 }
 
 const port = arg('port') ?? '8188';
-const startArgs = ['main.py', '--listen', '127.0.0.1', '--port', port, ...(gpu === 'cpu' ? ['--cpu'] : [])];
+// --offline keeps ComfyUI off the network: no partner API nodes, no remote
+// templates or registry calls. Image generation stays on this machine.
+const startArgs = ['main.py', '--listen', '127.0.0.1', '--port', port, '--offline', ...(gpu === 'cpu' ? ['--cpu'] : [])];
 if (process.argv.includes('--start')) {
   spawn(python, startArgs, { cwd: root, stdio: 'inherit' });
 } else {

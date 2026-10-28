@@ -30,6 +30,8 @@ export type ObjectInfoNode = {
   display_name?: string;
   category?: string;
   output_node?: boolean;
+  /** True for ComfyUI partner/API nodes, which call a cloud service. */
+  api_node?: boolean;
 };
 
 export type ObjectInfo = Record<string, ObjectInfoNode>;

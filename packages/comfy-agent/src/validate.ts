@@ -46,6 +46,10 @@ export function validateGraph(graph: ApiWorkflow, info: ObjectInfo): GraphIssue[
       issues.push({ nodeId, classType: node.class_type, kind: "unknown-class", message: `node class "${node.class_type}" is not installed on this server` });
       continue;
     }
+    if (def.api_node) {
+      issues.push({ nodeId, classType: node.class_type, kind: "cloud-node", message: `node class "${node.class_type}" is a partner API node that calls a cloud service; only local nodes may run` });
+      continue;
+    }
     if (def.output_node) hasOutputNode = true;
     for (const spec of inputSpecs(def)) {
       const present = Object.prototype.hasOwnProperty.call(node.inputs, spec.name);
@@ -124,6 +128,15 @@ export function validateGraph(graph: ApiWorkflow, info: ObjectInfo): GraphIssue[
 
 export function assertValidGraph(graph: ApiWorkflow, info: ObjectInfo): void {
   const issues = validateGraph(graph, info);
+  if (issues.length > 0) throw new GraphValidationError(issues);
+}
+
+/**
+ * Image generation stays on the local machine: refuse any graph that uses a
+ * partner API node. Runs even when full validation is skipped.
+ */
+export function assertLocalOnly(graph: ApiWorkflow, info: ObjectInfo): void {
+  const issues = validateGraph(graph, info).filter((i) => i.kind === "cloud-node");
   if (issues.length > 0) throw new GraphValidationError(issues);
 }
 

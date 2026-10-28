@@ -10,6 +10,7 @@ node scripts/comfyui-local/setup.ts --dir <install-dir> --start    # install, th
 - ComfyUI is pinned to the commit in `models.json`.
 - `--gpu` is `mps` on Apple silicon and `cuda` on Linux by default. Pass `--gpu cpu` to run without a GPU.
 - The script installs only models whose licences permit commercial use. It checks each file's sha256 before it moves the file into the models folder.
+- The server starts with `--offline`, so ComfyUI's cloud partner nodes are off. The asset loop also refuses any graph that uses a partner node.
 - Requires `git` and `uv`.
 
 | Model | File | Licence | Size |

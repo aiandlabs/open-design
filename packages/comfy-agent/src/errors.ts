@@ -169,6 +169,7 @@ export type GraphIssue = {
   input?: string;
   kind:
     | "unknown-class"
+    | "cloud-node"
     | "missing-input"
     | "bad-link"
     | "link-type"

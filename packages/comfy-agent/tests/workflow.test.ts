@@ -13,7 +13,7 @@ import {
 } from "../src/graphs.js";
 import { parseInputSpec, summarizeCapabilities, widgetOrder } from "../src/object-info.js";
 import { convertUiWorkflow, detectWorkflowFormat, toApiWorkflow, type UiWorkflow } from "../src/ui-convert.js";
-import { validateGraph } from "../src/validate.js";
+import { assertLocalOnly, validateGraph } from "../src/validate.js";
 import type { ApiWorkflow } from "../src/types.js";
 import { makeObjectInfo } from "./fixtures/object-info.js";
 
@@ -231,5 +231,25 @@ describe("families and sizes", () => {
     const doc = docFromGraph(buildImg2Img({ ...base, image: "a.png", denoise: 0.5 }).graph);
     expect(doc.kind).toBe("img2img");
     expect(doc.family).toBe("sdxl");
+  });
+});
+
+describe("local-only image generation", () => {
+  const withPartner = {
+    ...makeObjectInfo(),
+    FluxProUltraImageNode: { input: { required: {} }, output: ["IMAGE"], name: "FluxProUltraImageNode", api_node: true },
+  };
+
+  it("refuses partner API nodes even though the server lists them", () => {
+    const g = buildTxt2Img(base).graph;
+    g.cloud = { class_type: "FluxProUltraImageNode", inputs: {} };
+    const issues = validateGraph(g, withPartner);
+    expect(issues.map((i) => `${i.nodeId}:${i.kind}`)).toContain("cloud:cloud-node");
+  });
+
+  it("refuses them when full validation is skipped", () => {
+    const g = { cloud: { class_type: "FluxProUltraImageNode", inputs: {} } };
+    expect(() => assertLocalOnly(g, withPartner)).toThrow(/partner API node/);
+    expect(() => assertLocalOnly(buildTxt2Img(base).graph, withPartner)).not.toThrow();
   });
 });
