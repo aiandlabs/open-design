@@ -5815,4 +5815,28 @@ export interface Dict {
   'labs.optOutSkip': string;
   'labs.optOutOtherPlaceholder': string;
   'labs.optOutSubmit': string;
+  'settings.visualCheckTitle': string;
+  'settings.visualCheckDesc': string;
+  'settings.visualCheckRounds': string;
+  'settings.visualCheckRoundsOff': string;
+  'settings.visualCheckModel': string;
+  'settings.visualCheckModelHint': string;
+  'fileViewer.visualCheck': string;
+  'fileViewer.visualCheckTitle': string;
+  'fileViewer.visualCheckSubtitle': string;
+  'fileViewer.visualCheckViewport': string;
+  'fileViewer.visualCheckViewportDesktop': string;
+  'fileViewer.visualCheckViewportMobile': string;
+  'fileViewer.visualCheckViewportBoth': string;
+  'fileViewer.visualCheckBrief': string;
+  'fileViewer.visualCheckBriefPlaceholder': string;
+  'fileViewer.visualCheckRun': string;
+  'fileViewer.visualCheckRunning': string;
+  'fileViewer.visualCheckPass': string;
+  'fileViewer.visualCheckFail': string;
+  'fileViewer.visualCheckEvidence': string;
+  'fileViewer.visualCheckRepairHint': string;
+  'fileViewer.visualCheckUsage': string;
+  'fileViewer.visualCheckFailed': string;
+  'fileViewer.visualCheckScreenshotAlt': string;
 }

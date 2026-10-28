@@ -288,6 +288,7 @@ import {
 } from '../comments/comment-authority';
 import { composerHasUnsentWork } from '../comments/composer-unsent-work';
 import { RemixIcon } from './RemixIcon';
+import { VisualCheckAction } from './visual-check/VisualCheckAction';
 import { projectIsSharedWithWorkspace } from '../collab/project-shared-status';
 import { HandoffButton } from './HandoffButton';
 import { SocialShareGrid } from './SocialShareGrid';
@@ -17314,6 +17315,14 @@ function HtmlViewer({
                 >
                   <RemixIcon name="camera-line" size={15} />
                 </button>
+              ) : null}
+              {mode === 'preview' ? (
+                <VisualCheckAction
+                  projectId={projectId}
+                  fileName={file.name}
+                  disabled={viewerOnly}
+                  disabledTitle={viewerOnlyDisabledTitle}
+                />
               ) : null}
               <div className="artifact-tool-menu-anchor">
                 <button

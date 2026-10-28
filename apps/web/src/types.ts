@@ -1,4 +1,5 @@
 import type {
+  VisualCheckPrefs,
   AgentInfo,
   AgentDiagnostic,
   AgentFixIntent,
@@ -471,6 +472,8 @@ export interface AppConfig {
   customInstructions?: string;
   projectLocations?: ProjectLocationPrefs[];
   defaultProjectLocationId?: string | null;
+  // Settings → Instructions → Visual check. `rounds` 0 keeps the loop off.
+  visualCheck?: VisualCheckPrefs;
 }
 
 export interface TelemetryConfig {

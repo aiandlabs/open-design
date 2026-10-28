@@ -1,0 +1,39 @@
+.card {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+}
+
+.title {
+  margin: 0 0 4px;
+}
+
+.hint {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.label {
+  flex: 0 0 160px;
+  font-size: 13px;
+}
+
+.rounds {
+  width: 120px;
+}
+
+.model {
+  flex: 1 1 auto;
+  min-width: 0;
+}

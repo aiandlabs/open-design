@@ -1,4 +1,4 @@
-import type { AppConfigPrefs } from '@open-design/contracts';
+import { normalizeVisualCheckPrefs, type AppConfigPrefs } from '@open-design/contracts';
 import { MEDIA_PROVIDERS } from '../media/models';
 import { isOpenAICompatible } from '../providers/openai-compatible';
 import type {
@@ -1212,6 +1212,11 @@ export function mergeDaemonConfig(
   if (daemonConfig.customInstructions !== undefined) {
     next.customInstructions = daemonConfig.customInstructions ?? undefined;
   }
+  if (daemonConfig.visualCheck !== undefined) {
+    const visualCheck = normalizeVisualCheckPrefs(daemonConfig.visualCheck);
+    if (visualCheck) next.visualCheck = visualCheck;
+    else delete next.visualCheck;
+  }
   if (daemonConfig.projectLocations !== undefined) {
     next.projectLocations = daemonConfig.projectLocations;
   }
@@ -1341,6 +1346,7 @@ export async function syncConfigToDaemon(
     privacyDecisionAt: config.privacyDecisionAt,
     allowSilentUpdates: config.allowSilentUpdates,
     customInstructions: config.customInstructions ?? null,
+    ...(config.visualCheck ? { visualCheck: normalizeVisualCheckPrefs(config.visualCheck) ?? null } : {}),
     projectLocations: config.projectLocations ?? [],
     defaultProjectLocationId: config.defaultProjectLocationId ?? 'default',
   };

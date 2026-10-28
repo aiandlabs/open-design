@@ -41,6 +41,7 @@ import {
 import { LOCALE_LABEL, LOCALES, useI18n } from '../i18n';
 import type { Locale } from '../i18n';
 import type { Dict } from '../i18n/types';
+import { VisualCheckSettings } from './visual-check/VisualCheckSettings';
 import { AgentIcon } from './AgentIcon';
 import { AgentDiagnosticRow } from './AgentDiagnosticRow';
 import { DeepSeekHarnessSetupDialog } from './DeepSeekHarnessSetupDialog';
@@ -6074,6 +6075,7 @@ export function SettingsDialog({
                   }
                 />
               </div>
+              <VisualCheckSettings cfg={cfg} setCfg={setCfg} />
             </section>
           ) : null}
 
