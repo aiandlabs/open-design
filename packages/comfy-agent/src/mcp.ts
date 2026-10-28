@@ -60,7 +60,8 @@ export const TOOLS = [
         checkpoint: { type: "string", description: "Checkpoint or diffusion model file to use. Default: the strongest installed model." },
         seed: { type: "integer" },
         max_rounds: { type: "integer" },
-        max_time_s: { type: "number" },
+        max_time_s: { type: "number", description: "Active-time budget (generation, checks, LLM calls). Waiting in the ComfyUI queue does not count." },
+        max_wall_time_s: { type: "number", description: "Wall-clock ceiling including queue waits; the run stops with queue-timeout when it runs out." },
         max_cost_usd: { type: "number" },
         output_path: { type: "string" },
       },
@@ -154,6 +155,7 @@ export function createToolHandler(ctx: McpHandlerContext) {
               limits: {
                 ...(typeof args.max_rounds === "number" ? { maxRounds: args.max_rounds } : {}),
                 ...(typeof args.max_time_s === "number" ? { maxTimeMs: args.max_time_s * 1000 } : {}),
+                ...(typeof args.max_wall_time_s === "number" ? { maxWallTimeMs: args.max_wall_time_s * 1000 } : {}),
                 ...(typeof args.max_cost_usd === "number" ? { maxCostUsd: args.max_cost_usd } : {}),
               },
             },

@@ -8,7 +8,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 import type { ComfyClient } from "./client.js";
-import { ComfyAgentError, GraphEditError } from "./errors.js";
+import { ComfyAgentError, ComfyTimeoutError, GraphEditError } from "./errors.js";
 import { applyEdit, describeDoc, parseGraphEdit, type GraphEdit } from "./edits.js";
 import { familySpec } from "./families.js";
 import {
@@ -87,7 +87,16 @@ export type AssetRequest = {
 
 export type AssetLimits = {
   maxRounds?: number;
+  /**
+   * Budget for active time: prompt execution, post-processing and LLM calls.
+   * Time spent waiting in a shared ComfyUI queue does not count.
+   */
   maxTimeMs?: number;
+  /**
+   * Wall-clock ceiling, queue waits included, so a stuck queue still ends the
+   * run (stop reason `queue-timeout`). Default: 4 × maxTimeMs, at least 60 min.
+   */
+  maxWallTimeMs?: number;
   maxCostUsd?: number;
 };
 
@@ -133,7 +142,8 @@ export type RoundTrace = {
   round: number;
   startedAt: string;
   durationMs: number;
-  timing: { comfyMs: number; postProcessMs: number; criticMs: number; plannerMs: number };
+  /** comfyMs includes queueWaitMs, the time the prompt waited behind other prompts. */
+  timing: { comfyMs: number; queueWaitMs: number; postProcessMs: number; criticMs: number; plannerMs: number };
   graph: ApiWorkflow;
   settings: Record<string, unknown>;
   generation?: { promptId: string; width: number; height: number; via: string };
@@ -154,7 +164,12 @@ export type RoundTrace = {
   error?: { code: string; message: string };
 };
 
-export type StopReason = "all-pass" | "max-rounds" | "time-limit" | "cost-limit" | "error" | "aborted";
+/**
+ * `time-limit`: the active-time budget (maxTimeMs) ran out.
+ * `queue-timeout`: the wall-clock ceiling (maxWallTimeMs) ran out, or ComfyUI
+ * never started a prompt, because of waiting in a shared queue.
+ */
+export type StopReason = "all-pass" | "max-rounds" | "time-limit" | "queue-timeout" | "cost-limit" | "error" | "aborted";
 
 export type AssetTrace = {
   id: string;
@@ -185,6 +200,8 @@ export type AssetTrace = {
   stopReason: StopReason;
   totals: {
     durationMs: number;
+    /** Sum of the rounds' queue waits; durationMs minus this is the active time. */
+    queueWaitMs: number;
     inputTokens: number;
     outputTokens: number;
     reportedCostUsd: number | null;
@@ -200,7 +217,12 @@ export type AssetResult = {
   trace: AssetTrace;
 };
 
-const DEFAULT_LIMITS: Required<AssetLimits> = { maxRounds: 3, maxTimeMs: 15 * 60 * 1000, maxCostUsd: 1 };
+const DEFAULT_LIMITS: Omit<Required<AssetLimits>, "maxWallTimeMs"> = { maxRounds: 3, maxTimeMs: 15 * 60 * 1000, maxCostUsd: 1 };
+
+function resolveLimits(given: AssetLimits): Required<AssetLimits> {
+  const base = { ...DEFAULT_LIMITS, ...stripUndefined(given) };
+  return { ...base, maxWallTimeMs: given.maxWallTimeMs ?? Math.max(4 * base.maxTimeMs, 60 * 60 * 1000) };
+}
 
 type PlannerEdit =
   | GraphEdit
@@ -224,7 +246,7 @@ type PlanOutput = {
 export async function generateAsset(request: AssetRequest, options: AssetLoopOptions): Promise<AssetResult> {
   validateRequest(request);
   const startedAt = Date.now();
-  const limits: Required<AssetLimits> = { ...DEFAULT_LIMITS, ...stripUndefined(options.limits ?? {}) };
+  const limits = resolveLimits(options.limits ?? {});
   // Resolve both models before touching ComfyUI, so a bad model id fails fast.
   const [plannerModel, criticModel] = await Promise.all([
     options.llm.resolveModel("planner", options.plannerModel),
@@ -343,7 +365,7 @@ export async function generateAsset(request: AssetRequest, options: AssetLoopOpt
     rounds: [],
     best: null,
     stopReason: "max-rounds",
-    totals: { durationMs: 0, inputTokens: 0, outputTokens: 0, reportedCostUsd: null, estimatedCostUsd: 0, costUsd: 0 },
+    totals: { durationMs: 0, queueWaitMs: 0, inputTokens: 0, outputTokens: 0, reportedCostUsd: null, estimatedCostUsd: 0, costUsd: 0 },
   };
   addUsage(trace, planCall);
 
@@ -356,9 +378,16 @@ export async function generateAsset(request: AssetRequest, options: AssetLoopOpt
       trace.stopReason = "aborted";
       break;
     }
-    const elapsed = Date.now() - startedAt;
-    const avgRound = trace.rounds.length ? trace.rounds.reduce((s, r) => s + r.durationMs, 0) / trace.rounds.length : 0;
-    if (round > 1 && elapsed + avgRound > limits.maxTimeMs) {
+    // Queue waits count only against the wall-clock ceiling, not the active-time budget.
+    const wall = Date.now() - startedAt;
+    const queued = trace.rounds.reduce((s, r) => s + r.timing.queueWaitMs, 0);
+    const active = wall - queued;
+    const avgRound = trace.rounds.length ? trace.rounds.reduce((s, r) => s + r.durationMs - r.timing.queueWaitMs, 0) / trace.rounds.length : 0;
+    if (round > 1 && wall >= limits.maxWallTimeMs) {
+      trace.stopReason = "queue-timeout";
+      break;
+    }
+    if (round > 1 && active + avgRound > limits.maxTimeMs) {
       trace.stopReason = "time-limit";
       break;
     }
@@ -381,7 +410,7 @@ export async function generateAsset(request: AssetRequest, options: AssetLoopOpt
       round,
       startedAt: new Date(roundStart).toISOString(),
       durationMs: 0,
-      timing: { comfyMs: 0, postProcessMs: 0, criticMs: 0, plannerMs: 0 },
+      timing: { comfyMs: 0, queueWaitMs: 0, postProcessMs: 0, criticMs: 0, plannerMs: 0 },
       graph: structuredClone(doc.graph),
       settings: describeDoc(doc),
       checks: [],
@@ -398,12 +427,17 @@ export async function generateAsset(request: AssetRequest, options: AssetLoopOpt
       const run = await options.comfy.run(doc.graph, {
         validate: false,
         ...(options.runTimeoutMs ? { timeoutMs: options.runTimeoutMs } : {}),
+        // The prompt may wait in the queue only until the wall-clock ceiling.
+        queueTimeoutMs: Math.max(1, limits.maxWallTimeMs - (Date.now() - startedAt)),
         ...(options.signal ? { signal: options.signal } : {}),
         onProgress: (e) => {
+          if (e.type === "started") log(`round ${round}: started after ${Math.round((Date.now() - t) / 1000)} s in the queue`);
           if (e.type === "progress" && e.max > 0 && (e.value === e.max || e.value % 5 === 0)) log(`round ${round}: step ${e.value}/${e.max}`);
         },
       });
       rt.timing.comfyMs = Date.now() - t;
+      rt.timing.queueWaitMs = run.queueWaitMs;
+      trace.totals.queueWaitMs += run.queueWaitMs;
       const image = run.images.at(-1)!;
       rawPng = image.bytes;
       const raw = decodePng(rawPng);
@@ -411,8 +445,13 @@ export async function generateAsset(request: AssetRequest, options: AssetLoopOpt
     } catch (err) {
       rt.error = errorInfo(err);
       rt.durationMs = Date.now() - roundStart;
+      const queueTimeout = err instanceof ComfyTimeoutError && err.phase === "queue";
+      if (queueTimeout) {
+        rt.timing.queueWaitMs = rt.durationMs;
+        trace.totals.queueWaitMs += rt.durationMs;
+      }
       if (!best) throw err; // nothing to fall back to
-      trace.stopReason = options.signal?.aborted ? "aborted" : "error";
+      trace.stopReason = options.signal?.aborted ? "aborted" : queueTimeout ? "queue-timeout" : "error";
       break;
     }
     const rawPath = path.join(options.workDir, `round-${round}-raw.png`);

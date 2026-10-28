@@ -341,6 +341,37 @@ describe("generateAsset", () => {
     expect(res.trace.rounds).toHaveLength(1);
   });
 
+  it("does not spend the time budget on waiting in a shared queue", async () => {
+    // Every prompt waits 600 ms behind other clients, then runs in 5 ms. Counting
+    // the waits, the second round would already exceed maxTimeMs.
+    const { comfy, workDir } = await setup({ render: () => lanternPng(768, 768), queueDelayMs: 600, runDelayMs: 5 });
+    const { llm } = stubLlm({ plan: PLAN, critic: () => ({ items: [{ id: "count", pass: false }, { id: "background", pass: true }] }) });
+    const res = await generateAsset(
+      { prompt: "lantern", width: 768, height: 768 },
+      { comfy, llm, workDir, limits: { maxRounds: 3, maxTimeMs: 900 }, plannerModel: "test/planner", criticModel: "test/critic" },
+    );
+    expect(res.trace.stopReason).toBe("max-rounds");
+    expect(res.trace.rounds).toHaveLength(3);
+    for (const r of res.trace.rounds) {
+      expect(r.timing.queueWaitMs).toBeGreaterThanOrEqual(500);
+      expect(r.timing.comfyMs).toBeGreaterThanOrEqual(r.timing.queueWaitMs);
+    }
+    expect(res.trace.totals.queueWaitMs).toBeGreaterThanOrEqual(1500);
+    expect(res.trace.limits.maxWallTimeMs).toBe(60 * 60 * 1000);
+  });
+
+  it("stops with queue-timeout when the wall-clock ceiling runs out in the queue", async () => {
+    const { comfy, workDir } = await setup({ render: () => lanternPng(768, 768), queueDelayMs: 600, runDelayMs: 5 });
+    const { llm } = stubLlm({ plan: PLAN, critic: () => ({ items: [{ id: "count", pass: false }, { id: "background", pass: true }] }) });
+    const res = await generateAsset(
+      { prompt: "lantern", width: 768, height: 768 },
+      { comfy, llm, workDir, limits: { maxRounds: 3, maxTimeMs: 60_000, maxWallTimeMs: 900 }, plannerModel: "test/planner", criticModel: "test/critic" },
+    );
+    expect(res.trace.stopReason).toBe("queue-timeout");
+    expect(res.trace.best?.round).toBe(1);
+    expect(res.trace.rounds[1]!.error?.message).toMatch(/still waiting in the queue/);
+  });
+
   it("returns the best image when a later round fails, and reports the failure as itself", async () => {
     const { comfy, workDir } = await setup({
       render: () => lanternPng(768, 768),

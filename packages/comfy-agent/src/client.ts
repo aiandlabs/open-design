@@ -40,8 +40,13 @@ export type ComfyClientOptions = {
 };
 
 export type RunOptions = {
-  /** Deadline for the prompt to finish, from the moment it is queued. */
+  /**
+   * Deadline for the prompt to finish once the server starts executing it.
+   * Time spent waiting behind other prompts in a shared queue does not count.
+   */
   timeoutMs?: number;
+  /** How long the prompt may wait in the queue before the server starts it (default 60 min). */
+  queueTimeoutMs?: number;
   onProgress?: (event: ProgressEvent) => void;
   signal?: AbortSignal;
   /** Validate against /object_info before queueing (default true). */
@@ -51,6 +56,7 @@ export type RunOptions = {
 };
 
 const DEFAULT_TIMEOUT_MS = 10 * 60 * 1000;
+const DEFAULT_QUEUE_TIMEOUT_MS = 60 * 60 * 1000;
 
 export class ComfyClient {
   readonly baseUrl: string;
@@ -225,6 +231,13 @@ export class ComfyClient {
     void this.interrupt(promptId).catch(() => undefined);
   }
 
+  /** `GET /queue`: ids of the running and pending prompts. */
+  async getQueue(): Promise<{ running: string[]; pending: string[] }> {
+    const q = await this.json<{ queue_running?: unknown[][]; queue_pending?: unknown[][] }>("/queue");
+    const ids = (items: unknown[][] | undefined) => (items ?? []).map((item) => String(item?.[1] ?? ""));
+    return { running: ids(q.queue_running), pending: ids(q.queue_pending) };
+  }
+
   /** Remove still-pending prompts from the queue. */
   async deleteFromQueue(promptIds: string[]): Promise<void> {
     const res = await this.request("/queue", {
@@ -251,9 +264,16 @@ export class ComfyClient {
     try {
       const queued = await this.queuePrompt(graph);
       options.onProgress?.({ type: "queued", promptId: queued.promptId, ...(queued.number === undefined ? {} : { number: queued.number }) });
-      const { entry, via } = await this.waitFor(queued.promptId, ws, options);
+      const queuedAt = Date.now();
+      const { entry, via, startedAt } = await this.waitFor(queued.promptId, ws, options);
+      const finishedAt = Date.now();
       const images = await this.collectImages(queued.promptId, entry, options.outputNodeIds);
-      return { promptId: queued.promptId, images, durationMs: Date.now() - started, via };
+      // Execution time: from the observed start, or from the server's own
+      // execution_start/success timestamps when the start was not observed.
+      const serverMs = serverExecutionMs(entry);
+      const executionMs = startedAt !== null ? finishedAt - startedAt : serverMs ?? finishedAt - queuedAt;
+      const queueWaitMs = Math.max(0, finishedAt - queuedAt - executionMs);
+      return { promptId: queued.promptId, images, durationMs: Date.now() - started, queueWaitMs, executionMs, via };
     } finally {
       try {
         ws?.close();
@@ -306,9 +326,19 @@ export class ComfyClient {
     promptId: string,
     ws: WebSocket | null,
     options: RunOptions,
-  ): Promise<{ entry: HistoryEntry; via: "websocket" | "polling" }> {
+  ): Promise<{ entry: HistoryEntry; via: "websocket" | "polling"; startedAt: number | null }> {
     const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-    const deadline = Date.now() + timeoutMs;
+    const queueTimeoutMs = options.queueTimeoutMs ?? DEFAULT_QUEUE_TIMEOUT_MS;
+    const queueDeadline = Date.now() + queueTimeoutMs;
+    // Waiting behind other prompts does not count against `timeoutMs`: the run
+    // deadline starts when the server starts executing this prompt.
+    let startedAt = null as number | null;
+    const markStarted = () => {
+      if (startedAt === null) {
+        startedAt = Date.now();
+        options.onProgress?.({ type: "started", promptId });
+      }
+    };
     let lastStatus = "queued";
     let settledBy = null as "websocket" | "polling" | null;
     let failure = null as Error | null;
@@ -325,6 +355,7 @@ export class ComfyClient {
       }
       const data = msg.data ?? {};
       if (data.prompt_id !== promptId) return;
+      if (msg.type !== "execution_error" && msg.type !== "execution_interrupted") markStarted();
       switch (msg.type) {
         case "execution_start":
           lastStatus = "running";
@@ -392,16 +423,24 @@ export class ComfyClient {
             throw historyFailure(promptId, entry);
           }
           if (status?.completed || status?.status_str === "success" || (!status && Object.keys(entry.outputs ?? {}).length > 0)) {
-            return { entry, via: settledBy ?? "polling" };
+            return { entry, via: settledBy ?? "polling", startedAt };
           }
         } else if (settledBy) {
           // The socket said done but history is not written yet; poll quickly.
           lastStatus = "finishing";
+        } else if (startedAt === null) {
+          // Not started as far as the socket has said (or no socket): ask the queue.
+          const q = await this.getQueue().catch(() => null);
+          if (q?.running.includes(promptId)) markStarted();
+          else if (q && !q.pending.includes(promptId)) markStarted(); // left the queue: running or just finished
         }
-        const remaining = deadline - Date.now();
+        const now = Date.now();
+        const remaining = startedAt === null ? queueDeadline - now : startedAt + timeoutMs - now;
         if (remaining <= 0) {
           this.cancelPrompt(promptId);
-          throw new ComfyTimeoutError(promptId, timeoutMs, lastStatus);
+          throw startedAt === null
+            ? new ComfyTimeoutError(promptId, queueTimeoutMs, lastStatus, "queue")
+            : new ComfyTimeoutError(promptId, timeoutMs, lastStatus, "run");
         }
         const interval = settledBy
           ? 100
@@ -478,6 +517,18 @@ function validationErrorFrom(body: Record<string, unknown>): ComfyValidationErro
     };
   }
   return new ComfyValidationError(error, nodeErrors);
+}
+
+/** Execution time from the history entry's execution_start / execution_success timestamps (server clock). */
+function serverExecutionMs(entry: HistoryEntry): number | undefined {
+  const at = (type: string) => {
+    const msg = entry.status?.messages?.find((m) => m[0] === type);
+    const ts = msg?.[1]?.timestamp;
+    return typeof ts === "number" ? ts : undefined;
+  };
+  const start = at("execution_start");
+  const end = at("execution_success");
+  return start !== undefined && end !== undefined && end >= start ? end - start : undefined;
 }
 
 function executionErrorFrom(promptId: string, data: Record<string, unknown>): ComfyExecutionError {

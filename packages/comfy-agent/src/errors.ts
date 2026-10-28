@@ -135,16 +135,27 @@ export class ComfyOutputFetchError extends ComfyAgentError {
   }
 }
 
-/** The deadline passed while the prompt was still queued or running. */
+/**
+ * A deadline passed. `phase` says which: `queue` when the server never
+ * started the prompt (other prompts ahead of it in a shared queue), `run`
+ * when it started but did not finish in time.
+ */
 export class ComfyTimeoutError extends ComfyAgentError {
   readonly promptId: string;
   readonly timeoutMs: number;
   readonly lastStatus: string;
-  constructor(promptId: string, timeoutMs: number, lastStatus: string) {
-    super("COMFY_TIMEOUT", `ComfyUI prompt ${promptId} did not finish within ${timeoutMs} ms (last status: ${lastStatus})`);
+  readonly phase: "queue" | "run";
+  constructor(promptId: string, timeoutMs: number, lastStatus: string, phase: "queue" | "run" = "run") {
+    super(
+      "COMFY_TIMEOUT",
+      phase === "queue"
+        ? `ComfyUI prompt ${promptId} was still waiting in the queue after ${timeoutMs} ms`
+        : `ComfyUI prompt ${promptId} did not finish within ${timeoutMs} ms of starting (last status: ${lastStatus})`,
+    );
     this.promptId = promptId;
     this.timeoutMs = timeoutMs;
     this.lastStatus = lastStatus;
+    this.phase = phase;
   }
 }
 

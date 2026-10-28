@@ -23,8 +23,13 @@ export type FakeComfyOptions = {
   objectInfo?: ObjectInfo;
   /** Accept websocket upgrades (default true). */
   websocket?: boolean;
-  /** Delay between queueing and completion. */
+  /** Execution time: from execution_start to completion. */
   runDelayMs?: number;
+  /**
+   * Time each prompt waits in the queue before execution starts (as behind
+   * other clients' prompts on a shared server); GET /queue lists it as pending.
+   */
+  queueDelayMs?: number | ((index: number) => number);
   /** Decide the outcome for each queued prompt. */
   scenario?: (graph: ApiWorkflow, index: number) => Scenario;
   /** Produce the output PNG for a successful prompt. */
@@ -122,14 +127,27 @@ export async function startFakeComfy(options: FakeComfyOptions = {}): Promise<Fa
     timers.add(t);
   };
 
+  const pending = new Set<string>();
+  const running = new Set<string>();
+  const startedAt = new Map<string, number>();
+  const queueDelay = (index: number) => (typeof options.queueDelayMs === "function" ? options.queueDelayMs(index) : options.queueDelayMs ?? 0);
+
   const execute = (promptId: string, graph: ApiWorkflow, clientId: string, index: number) => {
+    pending.add(promptId);
+    const wait = queueDelay(index);
+    if (wait > 0) schedule(() => start(promptId, graph, clientId, index), wait);
+    else start(promptId, graph, clientId, index);
+  };
+
+  const start = (promptId: string, graph: ApiWorkflow, clientId: string, index: number) => {
+    pending.delete(promptId);
+    running.add(promptId);
+    startedAt.set(promptId, Date.now());
     const scenario = options.scenario?.(graph, index) ?? { kind: "success" };
-    if (scenario.kind === "never-finish") {
-      send(clientId, "execution_start", { prompt_id: promptId });
-      return;
-    }
+    send(clientId, "execution_start", { prompt_id: promptId });
+    if (scenario.kind === "never-finish") return;
     schedule(() => {
-      send(clientId, "execution_start", { prompt_id: promptId });
+      running.delete(promptId);
       const saveIds = Object.entries(graph).filter(([, n]) => n.class_type === "SaveImage" || n.class_type === "PreviewImage").map(([id]) => id);
       const samplerId = Object.entries(graph).find(([, n]) => n.class_type.startsWith("KSampler"))?.[0] ?? "x";
       send(clientId, "executing", { node: samplerId, prompt_id: promptId });
@@ -159,7 +177,17 @@ export async function startFakeComfy(options: FakeComfyOptions = {}): Promise<Fa
           entryOutputs[sid] = { images: [{ filename, subfolder: "", type: graph[sid]!.class_type === "SaveImage" ? "output" : "temp" }] };
         }
       }
-      history.set(promptId, { outputs: entryOutputs, status: { status_str: "success", completed: true, messages: [] } });
+      history.set(promptId, {
+        outputs: entryOutputs,
+        status: {
+          status_str: "success",
+          completed: true,
+          messages: [
+            ["execution_start", { prompt_id: promptId, timestamp: startedAt.get(promptId) }],
+            ["execution_success", { prompt_id: promptId, timestamp: Date.now() }],
+          ],
+        },
+      });
       send(clientId, "execution_success", { prompt_id: promptId });
       send(clientId, "executing", { node: null, prompt_id: promptId });
     }, delay);
@@ -195,6 +223,10 @@ export async function startFakeComfy(options: FakeComfyOptions = {}): Promise<Fa
         sendJson(res, 200, { prompt_id: id, number: index, node_errors: {} });
         execute(id, body.prompt, body.client_id, index);
         return;
+      }
+      if (req.method === "GET" && url.pathname === "/queue") {
+        const item = (id: string) => [0, id, {}, {}, []];
+        return sendJson(res, 200, { queue_running: [...running].map(item), queue_pending: [...pending].map(item) });
       }
       if (req.method === "GET" && url.pathname.startsWith("/history/")) {
         const id = decodeURIComponent(url.pathname.slice("/history/".length));

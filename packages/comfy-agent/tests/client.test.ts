@@ -199,6 +199,26 @@ describe("ComfyClient errors are reported as themselves", () => {
     expect(fake.interrupts.length).toBeGreaterThan(0);
   });
 
+  it.each([true, false])("does not count queue waiting against the run deadline (websocket: %s)", async (ws) => {
+    const { client } = await setup({ queueDelayMs: 400, runDelayMs: 20 }, { ws });
+    const events: ProgressEvent[] = [];
+    const res = await client.run(graph(), { timeoutMs: 200, onProgress: (e) => events.push(e) });
+    expect(res.images).toHaveLength(1);
+    expect(res.queueWaitMs).toBeGreaterThanOrEqual(300);
+    expect(res.executionMs).toBeLessThan(200);
+    expect(events.map((e) => e.type)).toContain("started");
+  });
+
+  it("a prompt that never leaves the queue → ComfyTimeoutError with phase queue, removed from the queue", async () => {
+    const { fake, client } = await setup({ queueDelayMs: 2000 });
+    const err = await client.run(graph(), { timeoutMs: 5000, queueTimeoutMs: 150 }).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ComfyTimeoutError);
+    expect((err as ComfyTimeoutError).phase).toBe("queue");
+    expect((err as ComfyTimeoutError).message).toMatch(/still waiting in the queue/);
+    await new Promise((r) => setTimeout(r, 50));
+    expect(fake.queueDeletes.length).toBeGreaterThan(0);
+  });
+
   it("caller abort → ComfyInterruptedError", async () => {
     const { client } = await setup({ scenario: () => ({ kind: "never-finish" }) });
     const ac = new AbortController();

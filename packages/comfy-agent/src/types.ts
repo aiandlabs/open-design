@@ -59,12 +59,18 @@ export type RunResult = {
   promptId: string;
   images: OutputImage[];
   durationMs: number;
+  /** Time spent waiting behind other prompts before the server started this one. */
+  queueWaitMs: number;
+  /** Time from the server starting this prompt to its completion. */
+  executionMs: number;
   /** How completion was observed. */
   via: "websocket" | "polling";
 };
 
 export type ProgressEvent =
   | { type: "queued"; promptId: string; number?: number }
+  /** The server started executing the prompt (it left the queue). */
+  | { type: "started"; promptId: string }
   | { type: "executing"; promptId: string; nodeId: string }
   | { type: "progress"; promptId: string; nodeId?: string; value: number; max: number }
   | { type: "cached"; promptId: string; nodeIds: string[] }
