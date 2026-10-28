@@ -32,6 +32,11 @@ import { COMMENT_IDENTITY_EDIT_DIRECTIVE } from '@open-design/contracts/prompts/
  */
 import { renderOfficialDesignerPrompt } from './official-system.js';
 import { applyVisualCheckBudget } from './visual-check-budget.js';
+import {
+  hasLocalImageGenerationRule,
+  renderLocalImageGenerationSection,
+} from './local-image-generation.js';
+import type { LocalImageGenerationPromptInput } from '@open-design/contracts';
 import { renderDiscoveryAndPhilosophy, renderSharedFramesBlock } from './discovery.js';
 import {
   PLATFORM_CONTRACTS_BLOCK,
@@ -554,14 +559,23 @@ function renderMediaDispatchModelGuidance(defaults?: ByokMediaDefaults): string 
 function renderMediaDispatchHint(
   defaults?: ByokMediaDefaults,
   runtimeDefaults?: ByokMediaDefaults,
+  localImageGeneration?: LocalImageGenerationPromptInput,
 ): string {
   const effectiveDefaults = runtimeDefaults ?? defaults;
-  const imageModel = effectiveDefaults?.imageModel?.trim() || 'flux-pro-ultra';
+  // With the local image rule in force, the example dispatches the local
+  // ComfyUI model and the model guidance defers to the "Image generation"
+  // section, which this run always carries (see composeSystemPrompt).
+  const localRule = hasLocalImageGenerationRule(localImageGeneration);
+  const imageModel = (localRule ? localImageGeneration?.comfyuiModel : null)
+    || effectiveDefaults?.imageModel?.trim()
+    || 'flux-pro-ultra';
   const hint = MEDIA_DISPATCH_HINT
     .replace('IMAGE_MODEL_VALUE', shellDoubleQuote(imageModel))
     .replace(
       'MODEL_SELECTION_GUIDANCE',
-      renderMediaDispatchModelGuidance(effectiveDefaults),
+      localRule
+        ? 'For images and video, the "Image generation" section of this prompt decides which model may run; it overrides the model in this example and any default below. Always pass `--surface` explicitly (`image`, `video`, or `audio`).'
+        : renderMediaDispatchModelGuidance(effectiveDefaults),
     );
   return `${hint}${renderByokMediaDefaultsHint(defaults)}${renderRuntimeMediaDefaultsHint(runtimeDefaults, defaults)}`;
 }
@@ -895,9 +909,13 @@ export interface ComposeInput {
   // `detectPlatformIntentSignal`). ORed with the metadata-based platform
   // gate for PLATFORM_CONTRACTS_BLOCK under slim; absent = metadata only.
   platformHintSignal?: boolean | undefined;
-  // The ComfyUI media provider is configured, so the media contract tells the
-  // agent when to use comfyui-agent / comfyui-workflow.
-  comfyuiConfigured?: boolean | undefined;
+  // Settings → Media providers → "Local image generation only" plus which
+  // local ComfyUI image model is ready. The shared rule
+  // (`renderLocalImageGenerationRule` in @open-design/contracts) reaches both
+  // sides of the fork: the media contract and a non-media section here, and the
+  // OD Next `local-image-generation` block. Absent, or policy off with no
+  // ComfyUI, leaves every prompt unchanged.
+  localImageGeneration?: LocalImageGenerationPromptInput | undefined;
   // Settings → visual check rounds (0..3). Above 0, filesystem runs swap the
   // one-render budget for the bounded `od visual-check` rule on both sides of
   // the fork (see ./visual-check-budget.ts and the OD Next
@@ -947,7 +965,7 @@ export function composeSystemPrompt({
   promptCoreVariant,
   mediaHintSignal,
   platformHintSignal,
-  comfyuiConfigured,
+  localImageGeneration,
   visualCheckRounds,
 }: ComposeInput): string {
   // ── FORK POINT: two independent prompt implementations ──────────────────
@@ -975,6 +993,7 @@ export function composeSystemPrompt({
       deckIntent: odNextStrategyRecipe.taskType !== 'ppt' && freeformDeckSignal === true,
       deckFrameworkMode,
       ...(visualCheckRounds ? { visualCheckRounds } : {}),
+      ...(localImageGeneration ? { localImageGeneration } : {}),
       metadata,
       template,
       designSystemBody,
@@ -1435,7 +1454,7 @@ export function composeSystemPrompt({
     // hint. The override above tells the agent to nudge the user toward Design
     // mode for anything that actually generates media.
   } else if (isMediaSurface) {
-    parts.push(renderMediaGenerationContract(mediaExecution, byokMediaDefaults, { comfyuiConfigured }));
+    parts.push(renderMediaGenerationContract(mediaExecution, byokMediaDefaults, { localImageGeneration }));
     const runtimeDefaultsHint = renderRuntimeMediaDefaultsHint(
       runtimeMediaDefaults,
       byokMediaDefaults,
@@ -1449,8 +1468,15 @@ export function composeSystemPrompt({
     // media, and the transcript-scanned signal flips the hint on for the
     // rest of the session as soon as one does.
     (isSlimCore ? slimTurnVariableParts : parts).push(
-      renderMediaDispatchHint(byokMediaDefaults, runtimeMediaDefaults),
+      renderMediaDispatchHint(byokMediaDefaults, runtimeMediaDefaults, localImageGeneration),
     );
+  }
+  if (!isAskMode && !isMediaSurface && resolvedExecutionProfile === 'filesystem') {
+    // Unlike the dispatch hint above, this is not gated on media vocabulary:
+    // a prototype that needs a hero image never says "generate an image", and
+    // without the section the agent read the full catalogue and tried hosted
+    // models first. Empty when the policy is off and ComfyUI is not configured.
+    parts.push(renderLocalImageGenerationSection(localImageGeneration));
   }
 
   // Critique Theater addendum. When cfg.enabled is true the panel protocol

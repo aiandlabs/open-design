@@ -657,7 +657,8 @@ import {
   VIDEO_LENGTHS_SEC,
   VIDEO_MODELS,
 } from './media/models.js';
-import { hasStoredProviderEntry, readMaskedConfig, writeConfig } from './media/config.js';
+import { readMaskedConfig, writeConfig } from './media/config.js';
+import { resolveLocalImageGenerationForPrompt } from './media/local-only.js';
 import {
   listMediaTasksByProject,
   listRecentMediaTasks,
@@ -10480,6 +10481,13 @@ export async function startServer({
     const visualCheckRoundsForPrompt = normalizeVisualCheckRounds(
       appConfigForPrompt?.visualCheck?.rounds,
     );
+    // Settings → "Local image generation only" (on unless turned off) and the
+    // ready ComfyUI image model. Feeds both sides of the prompt fork; see
+    // @open-design/contracts prompts/local-image-generation.ts.
+    const localImageGenerationForPrompt = await resolveLocalImageGenerationForPrompt({
+      projectRoot: PROJECT_ROOT,
+      config: appConfigForPrompt,
+    });
     let pluginDesignSystemId = null;
     if (
       typeof appliedPluginSnapshotId === 'string' &&
@@ -11106,7 +11114,7 @@ export async function startServer({
       sessionMode: normalizeConversationSessionMode(sessionMode),
       mediaExecution,
       byokMediaDefaults,
-      comfyuiConfigured: await hasStoredProviderEntry(PROJECT_ROOT, 'comfyui').catch(() => false),
+      localImageGeneration: localImageGenerationForPrompt,
       ...(visualCheckRoundsForPrompt > 0 ? { visualCheckRounds: visualCheckRoundsForPrompt } : {}),
       streamFormat,
       executionProfile: executionProfileFromStreamFormat(streamFormat),
@@ -11223,6 +11231,7 @@ export async function startServer({
           deckIntent: odNextStrategyRecipe.taskType !== 'discovery' && odNextDeckIntent,
           deckFrameworkMode: odNextDeckFrameworkMode,
           ...(visualCheckRoundsForPrompt > 0 ? { visualCheckRounds: visualCheckRoundsForPrompt } : {}),
+          localImageGeneration: localImageGenerationForPrompt,
           metadata,
           template,
           exampleReference: odNextExampleReference,

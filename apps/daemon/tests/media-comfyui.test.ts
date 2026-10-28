@@ -14,7 +14,7 @@ import { comfySizeForAspect, parseComfyMediaOptions } from '../src/media/comfyui
 import { generateMedia } from '../src/media/index.js';
 import { findMediaModel, findProvider } from '../src/media/models.js';
 import { mediaTaskErrorFromFailure } from '../src/media/task-error.js';
-import { COMFYUI_MEDIA_SECTION, renderMediaGenerationContract } from '../src/prompts/media-contract.js';
+import { renderMediaGenerationContract } from '../src/prompts/media-contract.js';
 
 // One local server stands in for both ComfyUI (no websocket, so the client
 // polls /history) and the ai& API (`AIAND_BASE_URL` points at /v1 here).
@@ -291,11 +291,13 @@ describe('comfyui request options and prompt gating', () => {
   });
 
   it('adds the ComfyUI section to the media contract only when the provider is configured', async () => {
-    expect(renderMediaGenerationContract(undefined, undefined)).not.toContain('ComfyUI models');
-    const on = renderMediaGenerationContract(undefined, undefined, { comfyuiConfigured: true });
-    expect(on).toContain(COMFYUI_MEDIA_SECTION.trim().split('\n')[0]!);
-    expect(on.indexOf('ComfyUI models')).toBeLessThan(on.indexOf('### Allowed model IDs'));
-    expect(on).toContain('`comfyui-agent`');
+    expect(renderMediaGenerationContract(undefined, undefined)).not.toContain('Image generation (local ComfyUI)');
+    const on = renderMediaGenerationContract(undefined, undefined, {
+      localImageGeneration: { localOnly: false, comfyuiModel: 'comfyui-agent' },
+    });
+    expect(on).toContain('### Image generation (local ComfyUI)');
+    expect(on.indexOf('Image generation (local ComfyUI)')).toBeLessThan(on.indexOf('### Allowed model IDs'));
+    expect(on).toContain('--model comfyui-agent');
 
     expect(await hasStoredProviderEntry(projectRoot, 'comfyui')).toBe(false);
     process.env.AIAND_API_KEY = 'env-only';

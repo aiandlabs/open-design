@@ -100,6 +100,7 @@ to the **host**, not to either strategy — if a strategy is retired, these stay
 | Motion `data-poster-time` | Agent-selected seconds; daemon validates the linked MP4 and freezes its frame with the composition dimensions | ✅ selected motion skill | ✅ motion task profile |
 | `.od-frames/` device shells | prototype device frames | ❌ | ✅ OD Next only |
 | Visual check budget (Settings → visual check rounds > 0; absent at 0) | `POST /api/projects/:id/visual-check` and its per-run budget (`routes/visual-check.ts`) | ✅ `visual-check-budget.ts` swaps the classic/slim one-render rule | ✅ `visual-check-budget` instruction block (filesystem runs) |
+| Local image generation (Settings → Media providers → "Local image generation only", on by default, and/or ComfyUI configured; absent when both are off) | `generateMedia` refuses hosted image/video providers (`media/local-only.ts`); `GET /api/media/models` readiness and default | ✅ `prompts/local-image-generation.ts` places the shared rule in the media contract (narrowing its catalogue lists) and as a non-media section | ✅ `local-image-generation` instruction block (filesystem runs) |
 
 Two things to read off this table.
 
