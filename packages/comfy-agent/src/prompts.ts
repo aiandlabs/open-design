@@ -144,9 +144,85 @@ export const CRITIC_SCHEMA: JsonSchema = {
   required: ["items"],
 };
 
+/**
+ * Leading, weighted background phrase (ComfyUI `(text:weight)` syntax). It
+ * goes first because CLIP attends most to the start of the prompt and long
+ * subject prompts push trailing text past the first 77-token chunk.
+ */
+export function keyColorLead(hex: string): string {
+  const name = KEY_COLORS[hex.toUpperCase()] ?? "flat solid";
+  return `(isolated on a plain flat solid ${name} background:1.2)`;
+}
+
 export function keyColorPhrase(hex: string): string {
   const name = KEY_COLORS[hex.toUpperCase()] ?? "flat solid";
-  return `isolated on a plain flat solid ${name} background, uniform ${name} backdrop, studio cut-out, no shadow, no floor`;
+  return `uniform ${name} backdrop, studio cut-out, no shadow, no floor`;
+}
+
+/** Positive prompt for a keyed asset: weighted lead, subject, then the backdrop reminder. */
+export function composeKeyedPrompt(subject: string, hex: string | undefined): string {
+  return hex ? `${keyColorLead(hex)}, ${subject}, ${keyColorPhrase(hex)}` : subject;
+}
+
+/** Remove what {@link composeKeyedPrompt} added, if the planner echoed it back. */
+export function stripKeyedPrompt(text: string): string {
+  let out = text;
+  for (const hex of Object.keys(KEY_COLORS)) {
+    out = out.replace(`${keyColorLead(hex)}, `, "").replace(`, ${keyColorPhrase(hex)}`, "");
+  }
+  return out.trim();
+}
+
+/**
+ * Normalise critic output. Vision models do not always follow the schema:
+ * seen in practice are a single item flattened to the top level, `items` as a
+ * JSON string, and `pass` as "false"/"pass"/"yes". Unrecognised shapes give
+ * an empty list (the caller treats missing grades as ungraded).
+ */
+export function normalizeCriticItems(raw: unknown): { id: string; pass: boolean; evidence?: string; repair_hint?: string }[] {
+  if (!raw || typeof raw !== "object") return [];
+  const r = raw as Record<string, unknown>;
+  let items: unknown = r.items ?? r.grades ?? r.results;
+  if (typeof items === "string") {
+    try {
+      items = JSON.parse(items);
+    } catch {
+      items = undefined;
+    }
+  }
+  if (items && !Array.isArray(items) && typeof items === "object") {
+    // { count: { pass: true }, ... } or { count: true, ... }
+    items = Object.entries(items as Record<string, unknown>).map(([id, v]) =>
+      v && typeof v === "object" ? { id, ...(v as object) } : { id, pass: v },
+    );
+  }
+  if (!Array.isArray(items)) items = "id" in r && "pass" in r ? [r] : [];
+  const out: { id: string; pass: boolean; evidence?: string; repair_hint?: string }[] = [];
+  for (const it of items as unknown[]) {
+    if (!it || typeof it !== "object") continue;
+    const o = it as Record<string, unknown>;
+    const pass = toBool(o.pass ?? o.passed ?? o.result ?? o.verdict);
+    if (typeof o.id !== "string" || pass === undefined) continue;
+    const evidence = o.evidence ?? o.reason;
+    const hint = o.repair_hint ?? o.repairHint ?? o.hint;
+    out.push({
+      id: o.id,
+      pass,
+      ...(typeof evidence === "string" && evidence ? { evidence } : {}),
+      ...(typeof hint === "string" && hint ? { repair_hint: hint } : {}),
+    });
+  }
+  return out;
+}
+
+function toBool(v: unknown): boolean | undefined {
+  if (typeof v === "boolean") return v;
+  if (typeof v === "string") {
+    const t = v.trim().toLowerCase();
+    if (["true", "pass", "passed", "yes", "ok"].includes(t)) return true;
+    if (["false", "fail", "failed", "no"].includes(t)) return false;
+  }
+  return undefined;
 }
 
 export const KEY_NEGATIVE = "gradient background, textured background, scenery, environment, cast shadow, floor, vignette";

@@ -51,7 +51,9 @@ import {
   CRITIC_TOOL,
   KEY_COLORS,
   KEY_NEGATIVE,
-  keyColorPhrase,
+  composeKeyedPrompt,
+  normalizeCriticItems,
+  stripKeyedPrompt,
   PLAN_SCHEMA,
   PLAN_TOOL,
   PLANNER_SYSTEM,
@@ -131,7 +133,7 @@ export type RoundTrace = {
   rawImagePath?: string;
   imagePath?: string;
   checks: CheckResult[];
-  critic?: { items: CriticItem[]; overall?: string; call?: LlmCallTrace; error?: string };
+  critic?: { items: CriticItem[]; overall?: string; call?: LlmCallTrace; retries?: LlmCallTrace[]; raw?: unknown; error?: string };
   score: { passed: number; total: number; ratio: number };
   repair?: {
     rationale?: string;
@@ -245,7 +247,7 @@ export async function generateAsset(request: AssetRequest, options: AssetLoopOpt
   let keyColor = request.transparent ? plan.key_color ?? "#00FF00" : undefined;
   let subjectPrompt = plan.positive_prompt;
   let subjectNegative = plan.negative_prompt;
-  const composePositive = () => (keyColor ? `${subjectPrompt}, ${keyColorPhrase(keyColor)}` : subjectPrompt);
+  const composePositive = () => composeKeyedPrompt(subjectPrompt, keyColor);
   const composeNegative = () => (keyColor ? `${subjectNegative}, ${KEY_NEGATIVE}` : subjectNegative);
 
   const sampling = defaultSampling(family, info);
@@ -386,23 +388,44 @@ export async function generateAsset(request: AssetRequest, options: AssetLoopOpt
     const criticView = encodePng(fitWithin(request.transparent ? compositeOver(post.image, { r: 128, g: 128, b: 128 }) : post.image, 768));
     try {
       log(`round ${round}: grading with ${criticModel}`);
-      const call = await options.llm.structured<{ items?: CriticItem[]; overall?: string }>(
-        {
-          model: criticModel,
-          system: CRITIC_SYSTEM,
-          content: [
-            { type: "image", mime: "image/png", base64: criticView.toString("base64") },
-            { type: "text", text: criticUserText(plan.checklist, request) },
-          ],
-          schema: CRITIC_SCHEMA,
-          toolName: CRITIC_TOOL,
-          maxTokens: 4096,
-          ...(options.criticReasoningEffort ? { reasoningEffort: options.criticReasoningEffort } : {}),
-        },
-        criticShape,
-      );
-      addUsage(trace, call);
-      rt.critic = { items: alignCritic(plan.checklist, call.data.items ?? []), call: callTrace("critic", call), ...(call.data.overall ? { overall: call.data.overall } : {}) };
+      const grade = async (reminder: string) => {
+        const call = await options.llm.structured<Record<string, unknown>>(
+          {
+            model: criticModel,
+            system: CRITIC_SYSTEM,
+            content: [
+              { type: "image", mime: "image/png", base64: criticView.toString("base64") },
+              { type: "text", text: criticUserText(plan.checklist, request) + reminder },
+            ],
+            schema: CRITIC_SCHEMA,
+            toolName: CRITIC_TOOL,
+            maxTokens: 4096,
+            ...(options.criticReasoningEffort ? { reasoningEffort: options.criticReasoningEffort } : {}),
+          },
+          criticShape,
+        );
+        addUsage(trace, call);
+        return { call, graded: normalizeCriticItems(call.data) };
+      };
+      let attempt = await grade("");
+      const calls = [callTrace("critic", attempt.call)];
+      const missing = (g: CriticItem[]) => plan.checklist.filter((c) => !g.some((it) => it.id === c.id));
+      let raw: unknown;
+      if (missing(attempt.graded).length > 0) {
+        // Keep what the model actually sent, then ask once more for every item.
+        raw = attempt.call.data;
+        const retry = await grade(`\nReturn an "items" array with exactly one entry for each of these ids: ${plan.checklist.map((c) => c.id).join(", ")}. "pass" must be a boolean.`);
+        calls.push(callTrace("critic", retry.call));
+        if (missing(retry.graded).length < missing(attempt.graded).length) attempt = retry;
+      }
+      const overall = typeof attempt.call.data.overall === "string" ? attempt.call.data.overall : undefined;
+      rt.critic = {
+        items: alignCritic(plan.checklist, attempt.graded),
+        call: calls[0]!,
+        ...(calls.length > 1 ? { retries: calls.slice(1) } : {}),
+        ...(raw !== undefined ? { raw } : {}),
+        ...(overall ? { overall } : {}),
+      };
     } catch (err) {
       rt.critic = { items: plan.checklist.map((c) => ({ id: c.id, pass: false, evidence: "critic unavailable" })), error: errorInfo(err).message };
     }
@@ -465,7 +488,7 @@ export async function generateAsset(request: AssetRequest, options: AssetLoopOpt
         const edit = parsePlannerEdit(raw);
         switch (edit.op) {
           case "set_prompt":
-            subjectPrompt = stripKeyPhrase(edit.text);
+            subjectPrompt = stripKeyedPrompt(edit.text);
             doc = applyEdit(doc, { op: "set_prompt", text: composePositive() }, info);
             break;
           case "set_negative_prompt":
@@ -620,22 +643,20 @@ function parsePlannerEdit(raw: unknown): PlannerEdit {
     if (!KEY_COLORS[hex]) throw new GraphEditError("set_key_color", `hex must be one of ${Object.keys(KEY_COLORS).join(", ")}`);
     return { op: "set_key_color", hex };
   }
-  if (r.op === "use_img2img" || r.op === "use_inpaint") {
+  if (r.op === "set_seed" && (r.seed === undefined || r.seed === null || r.seed === "" || !Number.isFinite(Number(r.seed)))) {
+    // Planners sometimes ask for "a new seed" without a value.
+    return { op: "set_seed", seed: randomInt(0, 2 ** 32 - 1) };
+  }
+    if (r.op === "use_img2img" || r.op === "use_inpaint") {
     throw new GraphEditError(String(r.op), "use img2img_from_previous / inpaint_previous instead");
   }
   return parseGraphEdit(raw);
 }
 
-function stripKeyPhrase(text: string): string {
-  let out = text;
-  for (const hex of Object.keys(KEY_COLORS)) out = out.replace(`, ${keyColorPhrase(hex)}`, "");
-  return out.trim();
-}
-
 function alignCritic(checklist: ChecklistItem[], items: CriticItem[]): CriticItem[] {
   // Exactly one grade per checklist item, in checklist order; missing grades fail.
   return checklist.map((c, i) => {
-    const found = items.find((it) => it && it.id === c.id) ?? items[i];
+    const found = items.find((it) => it && it.id === c.id) ?? (items.length === checklist.length ? items[i] : undefined);
     if (!found || typeof found.pass !== "boolean") return { id: c.id, pass: false, evidence: "not graded" };
     return {
       id: c.id,

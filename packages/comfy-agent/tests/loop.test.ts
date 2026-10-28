@@ -11,7 +11,7 @@ import { alphaStats, createImage, decodePng, encodePng, type RgbaImage } from ".
 import { AiandClient } from "../src/llm.js";
 import { generateAsset } from "../src/loop.js";
 import { createToolHandler } from "../src/mcp.js";
-import { CRITIC_TOOL, PLAN_TOOL, REPAIR_TOOL } from "../src/prompts.js";
+import { CRITIC_TOOL, normalizeCriticItems, PLAN_TOOL, REPAIR_TOOL } from "../src/prompts.js";
 import type { ApiWorkflow } from "../src/types.js";
 import { startFakeComfy, type FakeComfy, type FakeComfyOptions } from "./fixtures/fake-comfy.js";
 
@@ -106,6 +106,7 @@ describe("generateAsset", () => {
           { op: "set_negative_prompt", text: "multiple lanterns, petals" },
           { op: "set_seed", seed: 123 },
           { op: "set_sampler", sampler_name: "not_a_sampler" },
+          { op: "set_steps", text: "" },
         ],
       }),
     });
@@ -127,8 +128,9 @@ describe("generateAsset", () => {
     expect(r1!.checks).toEqual([{ id: "size", pass: true, detail: "512x512 (requested 512x512)" }]);
     expect(r1!.critic!.items[0]).toMatchObject({ id: "count", pass: false, repair_hint: "ask for a single lantern" });
     expect(r1!.repair!.applied).toHaveLength(3);
-    expect(r1!.repair!.rejected).toHaveLength(1);
+    expect(r1!.repair!.rejected).toHaveLength(2);
     expect(r1!.repair!.rejected[0]!.error).toMatch(/not_a_sampler/);
+    expect(r1!.repair!.rejected[1]!.error).toMatch(/steps must be a number/);
     expect(r1!.settings).toMatchObject({ seed: 7, sampler: "euler", scheduler: "karras", steps: 20, cfg: 6 });
 
     const g2 = r2!.graph as ApiWorkflow;
@@ -179,6 +181,18 @@ describe("generateAsset", () => {
     const sent = fake.prompts[0]!.graph;
     expect(String(sent.pos!.inputs.text)).toContain("chroma-key green background");
     expect(String(sent.neg!.inputs.text)).toContain("gradient background");
+  });
+
+  it("treats set_seed without a value as a request for a new seed", async () => {
+    const { fake, comfy, workDir } = await setup({ render: () => lanternPng(768, 768) });
+    const { llm } = stubLlm({
+      plan: PLAN,
+      critic: (n) => ({ items: [{ id: "count", pass: n > 0 }, { id: "background", pass: true }] }),
+      repair: () => ({ rationale: "new composition", edits: [{ op: "set_seed", text: "" }] }),
+    });
+    const res = await generateAsset({ prompt: "lantern", width: 768, height: 768, seed: 11 }, { comfy, llm, workDir, plannerModel: "test/planner", criticModel: "test/critic" });
+    expect(res.trace.rounds[0]!.repair!.applied).toHaveLength(1);
+    expect(fake.prompts[1]!.graph.sampler!.inputs.seed).not.toBe(11);
   });
 
   it("switches to img2img from the previous output when the planner asks", async () => {
@@ -262,6 +276,34 @@ describe("generateAsset", () => {
     const { comfy, workDir } = await setup({ scenario: () => ({ kind: "execution-error", nodeId: "decode", nodeType: "VAEDecode", message: "bad" }) });
     const { llm } = stubLlm({ plan: PLAN, critic: () => ({ items: [] }) });
     await expect(generateAsset({ prompt: "x", width: 512, height: 512 }, { comfy, llm, workDir, plannerModel: "test/planner", criticModel: "test/critic" })).rejects.toBeInstanceOf(ComfyExecutionError);
+  });
+});
+
+describe("critic output normalisation", () => {
+  it("accepts a flattened single item, string booleans and JSON-string items", () => {
+    expect(normalizeCriticItems({ id: "count", pass: "false", evidence: "nine lanterns", repair_hint: "one lantern" }))
+      .toEqual([{ id: "count", pass: false, evidence: "nine lanterns", repair_hint: "one lantern" }]);
+    expect(normalizeCriticItems({ items: JSON.stringify([{ id: "a", pass: "pass" }]) })).toEqual([{ id: "a", pass: true }]);
+    expect(normalizeCriticItems({ items: { a: true, b: { pass: "no", reason: "r" } } })).toEqual([{ id: "a", pass: true }, { id: "b", pass: false, evidence: "r" }]);
+    expect(normalizeCriticItems({ items: [{ id: "a", pass: "maybe" }] })).toEqual([]);
+    expect(normalizeCriticItems("nope")).toEqual([]);
+  });
+
+  it("retries the critic once when grades are missing, and keeps the raw reply in the trace", async () => {
+    const { comfy, workDir } = await setup({ render: () => lanternPng(768, 768) });
+    const { llm, log } = stubLlm({
+      plan: PLAN,
+      critic: (n) => (n === 0
+        ? { id: "count", pass: "false", evidence: "nine lanterns" }
+        : { items: [{ id: "count", pass: true }, { id: "background", pass: true }] }),
+    });
+    const res = await generateAsset({ prompt: "lantern", width: 768, height: 768 }, { comfy, llm, workDir, plannerModel: "test/planner", criticModel: "test/critic" });
+    expect(log.filter((l) => l.tool === CRITIC_TOOL)).toHaveLength(2);
+    const critic = res.trace.rounds[0]!.critic!;
+    expect(critic.raw).toEqual({ id: "count", pass: "false", evidence: "nine lanterns" });
+    expect(critic.retries).toHaveLength(1);
+    expect(critic.items.map((i) => i.pass)).toEqual([true, true]);
+    expect(res.trace.stopReason).toBe("all-pass");
   });
 });
 
