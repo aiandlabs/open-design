@@ -1,5 +1,4 @@
 import {
-  VISUAL_CHECK_DEFAULT_MODEL,
   VISUAL_CHECK_MAX_MODEL_CHARS,
   VISUAL_CHECK_MAX_ROUNDS,
   normalizeVisualCheckRounds,
@@ -75,7 +74,7 @@ export function VisualCheckSettings({ cfg, setCfg }: Props) {
           spellCheck={false}
           autoComplete="off"
           maxLength={VISUAL_CHECK_MAX_MODEL_CHARS}
-          placeholder={VISUAL_CHECK_DEFAULT_MODEL}
+          placeholder={t('settings.visualCheckModelAuto')}
           value={model}
           onChange={(event) => update({ model: event.target.value })}
         />

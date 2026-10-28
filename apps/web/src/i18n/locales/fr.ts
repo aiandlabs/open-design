@@ -5525,6 +5525,7 @@ export const fr: Dict = {
   "settings.visualCheckRoundsOff": "Désactivé",
   "settings.visualCheckModel": "Modèle de vision",
   "settings.visualCheckModelHint": "ID de modèle ai&. La clé provient du fournisseur média ComfyUI ou de AIAND_API_KEY.",
+  "settings.visualCheckModelAuto": "Automatique : un modèle de vision ai&",
   "fileViewer.visualCheck": "Vérifier avec un modèle de vision",
   "fileViewer.visualCheckTitle": "Vérification par modèle de vision",
   "fileViewer.visualCheckSubtitle": "Génère le rendu de ce fichier et évalue l'image selon une liste de contrôle.",

@@ -5525,6 +5525,7 @@ export const ptBR: Dict = {
   "settings.visualCheckRoundsOff": "Desativado",
   "settings.visualCheckModel": "Modelo de visão",
   "settings.visualCheckModelHint": "ID do modelo ai&. A chave vem do provedor de mídia ComfyUI ou de AIAND_API_KEY.",
+  "settings.visualCheckModelAuto": "Automático: um modelo de visão da ai&",
   "fileViewer.visualCheck": "Verificar com modelo de visão",
   "fileViewer.visualCheckTitle": "Verificação com modelo de visão",
   "fileViewer.visualCheckSubtitle": "Renderiza este arquivo e avalia a imagem com base em uma checklist.",

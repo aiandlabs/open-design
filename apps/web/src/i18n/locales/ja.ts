@@ -5525,6 +5525,7 @@ export const ja: Dict = {
   "settings.visualCheckRoundsOff": "オフ",
   "settings.visualCheckModel": "ビジョンモデル",
   "settings.visualCheckModelHint": "ai& のモデル ID。キーは ComfyUI メディアプロバイダーまたは AIAND_API_KEY から取得します。",
+  "settings.visualCheckModelAuto": "自動: ai& のビジョンモデル",
   "fileViewer.visualCheck": "ビジョンモデルでチェック",
   "fileViewer.visualCheckTitle": "ビジョンモデルによるチェック",
   "fileViewer.visualCheckSubtitle": "このファイルをレンダリングし、チェックリストに沿って画像を評価します。",

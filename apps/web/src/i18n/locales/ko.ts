@@ -5525,6 +5525,7 @@ export const ko: Dict = {
   "settings.visualCheckRoundsOff": "끔",
   "settings.visualCheckModel": "비전 모델",
   "settings.visualCheckModelHint": "ai& 모델 ID입니다. 키는 ComfyUI 미디어 공급자 또는 AIAND_API_KEY에서 가져옵니다.",
+  "settings.visualCheckModelAuto": "자동: ai&의 비전 모델",
   "fileViewer.visualCheck": "비전 모델로 검사",
   "fileViewer.visualCheckTitle": "비전 모델 검사",
   "fileViewer.visualCheckSubtitle": "이 파일을 렌더링하고 체크리스트에 따라 이미지를 평가합니다.",

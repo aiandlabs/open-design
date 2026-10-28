@@ -5540,6 +5540,7 @@ export const en: Dict = {
   "settings.visualCheckRoundsOff": "Off",
   "settings.visualCheckModel": "Vision model",
   "settings.visualCheckModelHint": "ai& model id. The key comes from the ComfyUI media provider or AIAND_API_KEY.",
+  "settings.visualCheckModelAuto": "Automatic: a vision model from ai&",
   "fileViewer.visualCheck": "Check with vision model",
   "fileViewer.visualCheckTitle": "Vision model check",
   "fileViewer.visualCheckSubtitle": "Renders this file and grades the picture against a checklist.",

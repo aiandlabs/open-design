@@ -7,6 +7,7 @@ import express from 'express';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { VisualCheckResponse } from '@open-design/contracts';
+import { AiandModelCatalog } from '@open-design/comfy-agent';
 
 import { registerVisualCheckRoutes, type RegisterVisualCheckRoutesDeps } from '../src/routes/visual-check.js';
 import { VISUAL_CHECK_BASELINE_CHECKLIST } from '../src/visual-check/grade.js';
@@ -36,7 +37,17 @@ type Setup = {
   renderError?: Error;
   projectPrompt?: string | null;
   grant?: { projectId: string; runId: string } | null;
+  /** Settings model; undefined keeps 'settings/model', null clears it. */
+  prefsModel?: string | null;
 };
+
+// A stubbed `GET /v1/models`, shaped like the live ai& list.
+const CATALOG = [
+  { id: 'text/only', capabilities: ['chat', 'tool_calling'] },
+  { id: 'catalog/vision', capabilities: ['vision', 'tool_calling'] },
+  { id: 'settings/model', capabilities: ['vision', 'tool_calling', 'reasoning'] },
+  { id: 'other/model', capabilities: ['vision', 'tool_calling'] },
+];
 
 async function start(setup: Setup = {}) {
   const structured = vi.fn(async (req: any) => ({
@@ -58,6 +69,11 @@ async function start(setup: Setup = {}) {
     latencyMs: 5,
     estimatedCostUsd: 0.0012,
   }));
+  const catalog = new AiandModelCatalog({
+    baseUrl: 'https://llm.test/v1',
+    fetch: (async () => new Response(JSON.stringify({ data: CATALOG }))) as typeof fetch,
+  });
+  const resolveModel = (role: 'visual-check', configured?: string | null) => catalog.resolve(role, configured);
   const render = vi.fn(async ({ viewports }: { viewports: Array<'desktop' | 'mobile'> }) => {
     if (setup.renderError) throw setup.renderError;
     return {
@@ -94,8 +110,11 @@ async function start(setup: Setup = {}) {
     readRounds: async () => setup.rounds ?? 0,
     serviceDeps: () => ({
       render,
-      createClient: async () => (setup.key === null ? null : ({ structured } as any)),
-      readPrefs: async () => ({ rounds: setup.rounds ?? 0, model: 'settings/model' }),
+      createClient: async () => (setup.key === null ? null : ({ structured, resolveModel } as any)),
+      readPrefs: async () => ({
+        rounds: setup.rounds ?? 0,
+        ...(setup.prefsModel === null ? {} : { model: setup.prefsModel ?? 'settings/model' }),
+      }),
       readProjectPrompt: async () => setup.projectPrompt ?? null,
       now: () => new Date(Date.UTC(2026, 9, 28, 1, 2, 3, 4)),
     }),
@@ -239,6 +258,32 @@ describe('POST /api/projects/:id/visual-check', () => {
     server!.close();
     await start({ grant: { projectId: 'p2', runId: 'run-x' } });
     expect((await post({ fileName: 'index.html' }, auth)).status).toBe(403);
+  });
+
+  it('picks a vision model from the ai& list when neither the request nor Settings names one', async () => {
+    const { structured } = await start({ prefsModel: null });
+    const resp = await post({ fileName: 'index.html' });
+    expect(resp.status).toBe(200);
+    expect(((await resp.json()) as VisualCheckResponse).model).toBe('catalog/vision');
+    expect(structured.mock.calls[0]![0].model).toBe('catalog/vision');
+  });
+
+  it('rejects a model without vision or one the list lacks, before rendering and without spending budget', async () => {
+    const { render, structured } = await start({ rounds: 1, prefsModel: 'text/only' });
+    const auth = { authorization: 'Bearer tool-token' };
+    const noVision = await post({ fileName: 'index.html' }, auth);
+    expect(noVision.status).toBe(400);
+    const error = ((await noVision.json()) as any).error;
+    expect(error.code).toBe('VISUAL_CHECK_MODEL_INVALID');
+    expect(error.message).toContain('"text/only" lacks vision');
+    expect(error.message).toContain('catalog/vision, settings/model, other/model');
+    const unknown = await post({ fileName: 'index.html', model: 'nope/missing' }, auth);
+    expect(unknown.status).toBe(400);
+    expect(((await unknown.json()) as any).error.message).toContain('"nope/missing" is not in the ai& model list');
+    expect(render).not.toHaveBeenCalled();
+    expect(structured).not.toHaveBeenCalled();
+    // Both refusals were refunded, so the one budgeted check is still there.
+    expect((await post({ fileName: 'index.html', model: 'other/model' }, auth)).status).toBe(200);
   });
 
   it('does not spend budget on a render failure', async () => {

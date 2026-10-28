@@ -5525,6 +5525,7 @@ export const tr: Dict = {
   "settings.visualCheckRoundsOff": "Kapalı",
   "settings.visualCheckModel": "Görüntü modeli",
   "settings.visualCheckModelHint": "ai& model kimliği. Anahtar ComfyUI medya sağlayıcısından veya AIAND_API_KEY değişkeninden alınır.",
+  "settings.visualCheckModelAuto": "Otomatik: ai& görüntü modeli",
   "fileViewer.visualCheck": "Görüntü modeliyle kontrol et",
   "fileViewer.visualCheckTitle": "Görüntü modeli kontrolü",
   "fileViewer.visualCheckSubtitle": "Bu dosyayı işler ve resmi bir kontrol listesine göre değerlendirir.",

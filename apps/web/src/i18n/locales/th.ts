@@ -5525,6 +5525,7 @@ export const th: Dict = {
   "settings.visualCheckRoundsOff": "ปิด",
   "settings.visualCheckModel": "โมเดลวิชัน",
   "settings.visualCheckModelHint": "รหัสโมเดลของ ai& คีย์มาจากผู้ให้บริการสื่อ ComfyUI หรือ AIAND_API_KEY",
+  "settings.visualCheckModelAuto": "อัตโนมัติ: โมเดลวิชันจาก ai&",
   "fileViewer.visualCheck": "ตรวจด้วยโมเดลวิชัน",
   "fileViewer.visualCheckTitle": "การตรวจด้วยโมเดลวิชัน",
   "fileViewer.visualCheckSubtitle": "เรนเดอร์ไฟล์นี้และให้คะแนนภาพตามรายการตรวจสอบ",

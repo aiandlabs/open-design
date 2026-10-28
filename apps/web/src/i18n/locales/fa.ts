@@ -5520,6 +5520,7 @@ export const fa: Dict = {
   "settings.visualCheckRoundsOff": "خاموش",
   "settings.visualCheckModel": "مدل بینایی",
   "settings.visualCheckModelHint": "شناسه مدل ai&. کلید از ارائه‌دهنده رسانه ComfyUI یا AIAND_API_KEY گرفته می‌شود.",
+  "settings.visualCheckModelAuto": "خودکار: یک مدل بینایی از ai&",
   "fileViewer.visualCheck": "بررسی با مدل بینایی",
   "fileViewer.visualCheckTitle": "بررسی با مدل بینایی",
   "fileViewer.visualCheckSubtitle": "این فایل را رندر می‌کند و تصویر را بر اساس فهرست بررسی ارزیابی می‌کند.",

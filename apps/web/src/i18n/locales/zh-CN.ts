@@ -5969,6 +5969,7 @@ export const zhCN: Dict = {
   "settings.visualCheckRoundsOff": "关闭",
   "settings.visualCheckModel": "视觉模型",
   "settings.visualCheckModelHint": "ai& 模型 ID。密钥来自 ComfyUI 媒体服务商或 AIAND_API_KEY。",
+  "settings.visualCheckModelAuto": "自动：ai& 的视觉模型",
   "fileViewer.visualCheck": "用视觉模型检查",
   "fileViewer.visualCheckTitle": "视觉模型检查",
   "fileViewer.visualCheckSubtitle": "渲染此文件，并按检查清单对画面评分。",

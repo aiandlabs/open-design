@@ -5821,6 +5821,7 @@ export interface Dict {
   'settings.visualCheckRoundsOff': string;
   'settings.visualCheckModel': string;
   'settings.visualCheckModelHint': string;
+  'settings.visualCheckModelAuto': string;
   'fileViewer.visualCheck': string;
   'fileViewer.visualCheckTitle': string;
   'fileViewer.visualCheckSubtitle': string;

@@ -14,7 +14,6 @@ export const VISUAL_CHECK_VIEWPORT_SIZES: Readonly<
   mobile: { width: 390, height: 844 },
 };
 
-export const VISUAL_CHECK_DEFAULT_MODEL = 'zai-org/glm-5.3-flash';
 /** Upper bound for the per-task rounds setting. 0 means the loop is off. */
 export const VISUAL_CHECK_MAX_ROUNDS = 3;
 export const VISUAL_CHECK_MAX_CHECKLIST_ITEMS = 20;
@@ -31,7 +30,10 @@ export interface VisualCheckRequest {
   checklist?: string[];
   /** Defaults to `['desktop']`. */
   viewports?: VisualCheckViewportName[];
-  /** ai& model id. Defaults to the Settings value, then VISUAL_CHECK_DEFAULT_MODEL. */
+  /**
+   * ai& model id. Defaults to the Settings value; with neither, the daemon
+   * picks a model with vision and tool calling from the live ai& model list.
+   */
   model?: string;
 }
 
@@ -90,7 +92,7 @@ export interface VisualCheckResponse {
 export interface VisualCheckPrefs {
   /** Checks the agent may run per task. 0 (default) turns the loop off. */
   rounds?: number;
-  /** ai& vision model id. Absent means VISUAL_CHECK_DEFAULT_MODEL. */
+  /** ai& vision model id. Absent means the daemon picks one from the ai& model list. */
   model?: string | null;
 }
 

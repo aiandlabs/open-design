@@ -5976,6 +5976,7 @@ export const zhTW: Dict = {
   "settings.visualCheckRoundsOff": "關閉",
   "settings.visualCheckModel": "視覺模型",
   "settings.visualCheckModelHint": "ai& 模型 ID。金鑰來自 ComfyUI 媒體供應商或 AIAND_API_KEY。",
+  "settings.visualCheckModelAuto": "自動：ai& 的視覺模型",
   "fileViewer.visualCheck": "用視覺模型檢查",
   "fileViewer.visualCheckTitle": "視覺模型檢查",
   "fileViewer.visualCheckSubtitle": "渲染此檔案，並依檢查清單為畫面評分。",

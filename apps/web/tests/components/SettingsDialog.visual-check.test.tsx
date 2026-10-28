@@ -44,7 +44,7 @@ describe('Settings → Instructions → Visual check', () => {
     vi.stubGlobal('fetch', originalFetch);
   });
 
-  it('defaults to off with the default model as placeholder', () => {
+  it('defaults to off, with automatic model selection as the placeholder', () => {
     vi.stubGlobal('fetch', vi.fn(async () => new Response('{}', { status: 200 })));
     renderInstructions();
     const rounds = screen.getByTestId('visual-check-rounds') as HTMLSelectElement;
@@ -53,7 +53,8 @@ describe('Settings → Instructions → Visual check', () => {
     expect(rounds.options[0]!.textContent).toBe('Off');
     const model = screen.getByTestId('visual-check-model') as HTMLInputElement;
     expect(model.value).toBe('');
-    expect(model.placeholder).toBe('zai-org/glm-5.3-flash');
+    // No model id is named: an empty field means the daemon picks one from the ai& list.
+    expect(model.placeholder).toBe('Automatic: a vision model from ai&');
   });
 
   it('shows the stored value and persists rounds and model changes', async () => {

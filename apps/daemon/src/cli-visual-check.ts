@@ -3,7 +3,6 @@
 // because cli.ts is the process entry and cannot be imported.
 
 import {
-  VISUAL_CHECK_DEFAULT_MODEL,
   visualCheckViewportsFromFlag,
   type VisualCheckRequest,
   type VisualCheckResponse,
@@ -54,7 +53,8 @@ Options:
   --prompt-file <path|->     Read the brief from a file, or stdin with -
   --checklist-file <path|->  One requirement per line; replaces the baseline
   --viewport <v>             desktop (default) | mobile | both
-  --model <id>               ai& vision model (default: Settings, then ${VISUAL_CHECK_DEFAULT_MODEL})
+  --model <id>               ai& model id with vision and tool calling
+                             (default: Settings, then picked from the ai& model list)
   --json                     Print the full result as JSON
   --daemon-url <url>         Override daemon URL
 

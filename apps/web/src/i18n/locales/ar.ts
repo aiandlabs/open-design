@@ -5525,6 +5525,7 @@ export const ar: Dict = {
   "settings.visualCheckRoundsOff": "إيقاف",
   "settings.visualCheckModel": "نموذج الرؤية",
   "settings.visualCheckModelHint": "معرّف نموذج ai&. يُؤخذ المفتاح من موفّر الوسائط ComfyUI أو من AIAND_API_KEY.",
+  "settings.visualCheckModelAuto": "تلقائي: نموذج رؤية من ai&",
   "fileViewer.visualCheck": "افحص بنموذج الرؤية",
   "fileViewer.visualCheckTitle": "فحص بنموذج الرؤية",
   "fileViewer.visualCheckSubtitle": "يعرض هذا الملف ويقيّم الصورة وفق قائمة تحقق.",

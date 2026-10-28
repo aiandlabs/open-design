@@ -5525,6 +5525,7 @@ export const uk: Dict = {
   "settings.visualCheckRoundsOff": "Вимк.",
   "settings.visualCheckModel": "Модель зору",
   "settings.visualCheckModelHint": "ID моделі ai&. Ключ береться з медіапровайдера ComfyUI або з AIAND_API_KEY.",
+  "settings.visualCheckModelAuto": "Автоматично: модель із розпізнаванням зображень від ai&",
   "fileViewer.visualCheck": "Перевірити моделлю зору",
   "fileViewer.visualCheckTitle": "Перевірка моделлю зору",
   "fileViewer.visualCheckSubtitle": "Рендерить цей файл і оцінює зображення за контрольним списком.",

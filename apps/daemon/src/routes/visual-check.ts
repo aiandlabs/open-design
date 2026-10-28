@@ -14,6 +14,7 @@ import {
   normalizeVisualCheckRounds,
   parseVisualCheckRequest,
 } from '@open-design/contracts';
+import { ModelSelectionError } from '@open-design/comfy-agent';
 
 import type {
   AuthorizeProjectRequest,
@@ -153,11 +154,15 @@ export function registerVisualCheckRoutes(app: Express, ctx: RegisterVisualCheck
       return res.json(response);
     } catch (err: any) {
       // A failure that never reached the model does not spend the run's budget.
-      if (grant && (err instanceof VisualCheckRenderError || err instanceof VisualCheckConfigError)) {
+      const modelRejected = err instanceof ModelSelectionError;
+      if (grant && (err instanceof VisualCheckRenderError || err instanceof VisualCheckConfigError || modelRejected)) {
         budget.refund(grant.runId);
       }
       if (err instanceof VisualCheckConfigError) {
         return sendApiError(res, 400, err.code, err.message);
+      }
+      if (modelRejected) {
+        return sendApiError(res, 400, 'VISUAL_CHECK_MODEL_INVALID', err.message);
       }
       if (err instanceof VisualCheckRenderError) {
         return sendApiError(res, 503, err.code, err.message);

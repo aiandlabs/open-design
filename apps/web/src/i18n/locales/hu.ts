@@ -5525,6 +5525,7 @@ export const hu: Dict = {
   "settings.visualCheckRoundsOff": "Ki",
   "settings.visualCheckModel": "Képfelismerő modell",
   "settings.visualCheckModelHint": "ai& modellazonosító. A kulcs a ComfyUI médiaszolgáltatóból vagy az AIAND_API_KEY változóból származik.",
+  "settings.visualCheckModelAuto": "Automatikus: egy ai& látómodell",
   "fileViewer.visualCheck": "Ellenőrzés képfelismerő modellel",
   "fileViewer.visualCheckTitle": "Képfelismerő modelles ellenőrzés",
   "fileViewer.visualCheckSubtitle": "Megjeleníti ezt a fájlt, és ellenőrzőlista alapján értékeli a képet.",

@@ -5525,6 +5525,7 @@ export const id: Dict = {
   "settings.visualCheckRoundsOff": "Mati",
   "settings.visualCheckModel": "Model visi",
   "settings.visualCheckModelHint": "ID model ai&. Kunci diambil dari penyedia media ComfyUI atau AIAND_API_KEY.",
+  "settings.visualCheckModelAuto": "Otomatis: model visi dari ai&",
   "fileViewer.visualCheck": "Periksa dengan model visi",
   "fileViewer.visualCheckTitle": "Pemeriksaan model visi",
   "fileViewer.visualCheckSubtitle": "Merender file ini dan menilai gambarnya berdasarkan daftar periksa.",

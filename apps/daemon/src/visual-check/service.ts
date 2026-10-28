@@ -5,7 +5,6 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
 import {
-  VISUAL_CHECK_DEFAULT_MODEL,
   type VisualCheckPrefs,
   type VisualCheckRequest,
   type VisualCheckResponse,
@@ -34,7 +33,7 @@ export class VisualCheckConfigError extends Error {
 export interface VisualCheckServiceDeps {
   render: (input: { fileName: string; viewports: VisualCheckViewportName[] }) => Promise<VisualCheckRenderResult>;
   /** Returns null when no ai& API key is configured. */
-  createClient: () => Promise<Pick<AiandClient, 'structured'> | null>;
+  createClient: () => Promise<Pick<AiandClient, 'structured' | 'resolveModel'> | null>;
   readPrefs: () => Promise<VisualCheckPrefs | null | undefined>;
   /** The project's original prompt, used when the request has no brief or checklist. */
   readProjectPrompt: () => Promise<string | null>;
@@ -66,7 +65,10 @@ export async function runVisualCheck(
     );
   }
   const prefs = await deps.readPrefs().catch(() => null);
-  const model = request.model ?? prefs?.model ?? VISUAL_CHECK_DEFAULT_MODEL;
+  // No literal default: an unset model is picked from the live ai& catalog
+  // (vision + tool calling); a set one must exist there with those
+  // capabilities, or this throws ModelSelectionError before anything renders.
+  const model = await client.resolveModel('visual-check', request.model ?? prefs?.model ?? undefined);
 
   let brief = request.brief;
   let briefSource: 'brief' | 'project-prompt' | undefined = brief ? 'brief' : undefined;
