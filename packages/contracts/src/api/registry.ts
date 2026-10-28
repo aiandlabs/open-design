@@ -7,6 +7,8 @@ export interface ModelMetadata {
   capability?: ModelCapability;
   /** Provider/catalog-declared total context window; observability only. */
   contextWindowTokens?: number;
+  /** The catalog says the model accepts image input. Absent means unknown. */
+  vision?: boolean;
 }
 
 export interface AgentModelOption {

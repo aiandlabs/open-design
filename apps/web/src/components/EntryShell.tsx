@@ -248,6 +248,11 @@ import {
   readStoredRailOpen,
 } from './entryRailBridge';
 import { resolveByokModelPreference } from './byok/validation';
+import {
+  orderVisionModelsFirst,
+  providerListsModelsWithoutKey,
+  suggestedIdsWithLiveList,
+} from './byok/public-model-list';
 import onboardingWelcomeStyles from './OnboardingWelcome.module.css';
 import { AmrActivationHintText } from './AmrActivationHintText';
 
@@ -2429,10 +2434,19 @@ function OnboardingView({
     Boolean(config.apiKey.trim()) &&
     Boolean(config.baseUrl.trim()) &&
     Boolean(config.model.trim());
+  const selectedProvider = KNOWN_PROVIDERS.find(
+    (provider) =>
+      provider.protocol === apiProtocol &&
+      (
+        provider.baseUrl === (config.apiProviderBaseUrl ?? config.baseUrl) ||
+        (apiProtocol === 'azure' && provider.baseUrl === '' && Boolean(config.baseUrl?.trim()))
+      ),
+  ) ?? null;
   const canFetchProviderModels =
     apiProtocol !== 'azure' &&
     apiProtocol !== 'ollama' &&
-    Boolean(config.apiKey.trim()) &&
+    // A preset whose model list is public (ai&) loads it before a key exists.
+    (Boolean(config.apiKey.trim()) || providerListsModelsWithoutKey(selectedProvider)) &&
     Boolean(config.baseUrl.trim()) &&
     isLikelyHttpUrl(config.baseUrl);
   const visibleProviderTestState =
@@ -2445,14 +2459,6 @@ function OnboardingView({
     providerModelsState.inputKey === providerModelsInputKey
       ? providerModelsState
       : { status: 'idle' as const };
-  const selectedProvider = KNOWN_PROVIDERS.find(
-    (provider) =>
-      provider.protocol === apiProtocol &&
-      (
-        provider.baseUrl === (config.apiProviderBaseUrl ?? config.baseUrl) ||
-        (apiProtocol === 'azure' && provider.baseUrl === '' && Boolean(config.baseUrl?.trim()))
-      ),
-  ) ?? null;
   const candidateCliAgents = agents.filter(
     (agent) => agent.id !== 'amr' && (agent.available || deepSeekHarnessNeedsSetup(agent)),
   );
@@ -2761,13 +2767,18 @@ function OnboardingView({
       value: model.id,
       label: model.label ?? model.id,
     })) ?? [];
-  const fetchedProviderModels =
-    activeProviderModelsCache[providerModelsInputKey] ?? [];
+  const fetchedProviderModels = orderVisionModelsFirst(
+    activeProviderModelsCache[providerModelsInputKey] ?? [],
+  );
   const byokModelOptions = mergeOnboardingProviderModelOptions(
     fetchedProviderModels,
-    selectedProvider?.preferredModels.length
-      ? selectedProvider.preferredModels
-      : SUGGESTED_MODELS_BY_PROTOCOL[apiProtocol],
+    suggestedIdsWithLiveList(
+      selectedProvider,
+      selectedProvider?.preferredModels.length
+        ? selectedProvider.preferredModels
+        : SUGGESTED_MODELS_BY_PROTOCOL[apiProtocol],
+      fetchedProviderModels.length,
+    ),
     config.model,
   ).map((model) => ({
     value: model.id,

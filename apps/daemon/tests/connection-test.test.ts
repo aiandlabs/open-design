@@ -287,6 +287,46 @@ describe('POST /api/provider/models', () => {
     expect(body.models?.[1]?.default).toBeUndefined();
   });
 
+  // ai&'s /v1/models is public: the picker loads it before a key is entered.
+  it('lists a public OpenAI-shape catalogue without a key, sending no credentials', async () => {
+    const fetchMock = passThroughOrUpstream((url, init) => {
+      expect(url).toBe('https://api.aiand.com/v1/models');
+      expect(init?.headers).toEqual({});
+      return jsonResponse({
+        object: 'list',
+        data: [
+          { id: 'text/only', name: 'Text Only', capabilities: ['reasoning', 'tool_calling'] },
+          { id: 'vision/model', name: 'Vision Model', capabilities: ['vision', 'tool_calling'], context_window: 262144 },
+        ],
+      });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const res = await realFetch(`${baseUrl}/api/provider/models`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ protocol: 'openai', baseUrl: 'https://api.aiand.com/v1', apiKey: '' }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({
+      ok: true,
+      models: [
+        { id: 'text/only', label: 'Text Only', metadata: { vision: false } },
+        { id: 'vision/model', label: 'Vision Model', metadata: { vision: true, contextWindowTokens: 262144 } },
+      ],
+    });
+  });
+
+  it('still requires a key for protocols whose model list is never public', async () => {
+    const res = await realFetch(`${baseUrl}/api/provider/models`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ protocol: 'google', baseUrl: 'https://generativelanguage.googleapis.com', apiKey: ' ' }),
+    });
+    expect(res.status).toBe(400);
+  });
+
   // Regression for #5367: a gateway's /models catalogue can list embedding
   // models alongside real chat models. `BAAI/bge-large-en-v1.5` (reported via
   // SiliconFlow) doesn't contain any of the existing exclusion substrings

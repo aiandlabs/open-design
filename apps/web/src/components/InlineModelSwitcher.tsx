@@ -97,6 +97,7 @@ import {
   providerModelsCacheKey,
   type ProviderModelsCache,
 } from './providerModelsCache';
+import { orderVisionModelsFirst, suggestedIdsWithLiveList } from './byok/public-model-list';
 import { isDeepSeekV4FlashCampaignModel } from '../campaigns/deepseek-v4-flash';
 import { useDeepSeekV4FlashCampaignVisibility } from '../campaigns/use-deepseek-v4-flash-campaign';
 
@@ -991,7 +992,10 @@ export function InlineModelSwitcher({
       ),
     [apiProtocol, config.apiKey, config.apiVersion, config.baseUrl],
   );
-  const fetchedApiModelOptions = providerModelsCache?.[providerModelsKey] ?? [];
+  const fetchedApiModelOptions = useMemo(
+    () => orderVisionModelsFirst(providerModelsCache?.[providerModelsKey] ?? []),
+    [providerModelsCache, providerModelsKey],
+  );
 
   // Warm the shared provider-models cache from the home picker itself. The
   // picker otherwise depends on Settings/onboarding having fetched first, so on
@@ -1047,14 +1051,18 @@ export function InlineModelSwitcher({
 
   const suggestedApiModelIds = useMemo(
     () =>
-      Array.from(
-        new Set(
-          providerForProtocol?.preferredModels.length
-            ? providerForProtocol.preferredModels
-            : SUGGESTED_MODELS_BY_PROTOCOL[apiProtocol],
+      suggestedIdsWithLiveList(
+        providerForProtocol,
+        Array.from(
+          new Set(
+            providerForProtocol?.preferredModels.length
+              ? providerForProtocol.preferredModels
+              : SUGGESTED_MODELS_BY_PROTOCOL[apiProtocol],
+          ),
         ),
+        fetchedApiModelOptions.length,
       ),
-    [apiProtocol, providerForProtocol],
+    [apiProtocol, fetchedApiModelOptions.length, providerForProtocol],
   );
   const apiModelOptions = useMemo(
     () => mergeProviderModelOptions(fetchedApiModelOptions, suggestedApiModelIds),

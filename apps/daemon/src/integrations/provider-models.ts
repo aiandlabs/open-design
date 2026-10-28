@@ -12,6 +12,12 @@ import { isLoopbackApiHost } from '@open-design/contracts/api/connectionTest';
 import { redactSecrets, validateUserProviderBaseUrl } from '../connectionTest.js';
 import { googleProviderModelsUrl, normalizeGoogleModelId } from './google-models.js';
 import { aihubmixHeaders, aihubmixCatalogUrl, parseAIHubMixCatalog } from './aihubmix.js';
+import {
+  declaresTextGeneration,
+  listedCapabilities,
+  listedContextWindow,
+  listedDisplayName,
+} from './model-list-fields.js';
 
 type ProviderModelsInput = ProviderModelsRequest & {
   signal?: AbortSignal;
@@ -140,12 +146,33 @@ function openAiModelOption(item: unknown): ProviderModelOption | null {
   if (!item || typeof item !== 'object') return null;
   const obj = item as { id?: unknown; metadata?: unknown };
   const id = typeof obj?.id === 'string' ? obj.id : '';
-  if (!id || !isOpenAiChatModelId(id)) return null;
-  const metadata = extractModelMetadata(obj.metadata);
+  if (!id) return null;
+  // A list that declares capabilities (ai& does) is trusted over the id
+  // heuristics, which would otherwise drop a chat model whose id happens to
+  // contain e.g. "video" or "image".
+  const capabilities = listedCapabilities(obj);
+  if (!(declaresTextGeneration(capabilities) ?? isOpenAiChatModelId(id))) return null;
+  const metadata = withListedMetadata(extractModelMetadata(obj.metadata), obj, capabilities);
   return {
     id,
-    label: id,
+    label: listedDisplayName(obj) ?? id,
     ...(metadata ? { metadata } : {}),
+  };
+}
+
+/** Add `vision` and `contextWindowTokens` from a list entry's top-level fields. */
+function withListedMetadata(
+  base: ModelMetadata | null,
+  item: unknown,
+  capabilities: readonly string[] | undefined,
+): ModelMetadata | null {
+  const contextWindowTokens = listedContextWindow(item);
+  const vision = capabilities && capabilities.length > 0 ? capabilities.includes('vision') : undefined;
+  if (!base && contextWindowTokens === undefined && vision === undefined) return null;
+  return {
+    ...(base ?? {}),
+    ...(contextWindowTokens !== undefined ? { contextWindowTokens } : {}),
+    ...(vision !== undefined ? { vision } : {}),
   };
 }
 
@@ -194,7 +221,11 @@ function extractAnthropicModels(data: unknown): ProviderModelOption[] {
             : typeof obj?.displayName === 'string'
               ? obj.displayName
               : id;
-        return id ? { id, label } : null;
+        if (!id) return null;
+        const capabilities = listedCapabilities(obj);
+        if (declaresTextGeneration(capabilities) === false) return null;
+        const metadata = withListedMetadata(null, obj, capabilities);
+        return { id, label, ...(metadata ? { metadata } : {}) };
       })
       .filter((item): item is ProviderModelOption => item != null),
   );
@@ -259,6 +290,11 @@ function providerModelsHeaders(
   protocol: ConnectionTestProtocol,
   apiKey: string,
 ): Record<string, string> {
+  // A blank key sends no credentials, so a provider whose model list is
+  // public (ai&) can answer; one that needs a key answers 401 → auth_failed.
+  if ((protocol === 'openai' || protocol === 'anthropic') && !apiKey.trim()) {
+    return protocol === 'anthropic' ? { 'anthropic-version': '2023-06-01' } : {};
+  }
   if (protocol === 'openai' || protocol === 'senseaudio') {
     return { authorization: `Bearer ${apiKey}` };
   }

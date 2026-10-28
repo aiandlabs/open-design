@@ -128,23 +128,22 @@ export interface KnownProvider {
   apiKeyConsoleLink?: { host: string; url: string };
   /** Some local/self-hosted endpoints do not require bearer credentials. */
   requiresApiKey?: boolean;
+  /**
+   * The provider's model list endpoint answers without a key. Settings loads
+   * the live list as soon as the preset is selected, and once it has loaded
+   * the list replaces `preferredModels` as the suggestions.
+   */
+  publicModelList?: boolean;
 }
 
-// ai& (aiand.com) serves one catalogue behind both API shapes, so the
-// OpenAI-compatible and Anthropic-compatible entries share this list.
-// Vision-capable models come first.
-const AIAND_PREFERRED_MODELS = [
-  'moonshotai/kimi-k3',
-  'zai-org/glm-5.3-flash',
-  'qwen/qwen3.8-27b',
-  'deepseek-ai/deepseek-v4.1-flash',
-  'google/gemma-4-31b-it',
-  'qwen/qwen3.6-27b',
-  'zai-org/glm-5.3',
-  'deepseek-ai/deepseek-v4-pro',
-  'motif-technologies/motif-3',
-  'openai/gpt-oss-120b',
-];
+// ai& (aiand.com) serves one catalogue behind both API shapes, and its
+// GET /v1/models is public, so the presets set `publicModelList` and the
+// picker shows the live list (with names, vision models first) before a key
+// is entered. This one id is not a catalogue: it is the initial selection
+// while that list loads, it stays only if the live list offers it, and it is
+// the fallback when the list cannot be fetched. It matches the comfy-agent
+// planner preference, the model the ai& integration was tested with live.
+const AIAND_FALLBACK_MODELS = ['moonshotai/kimi-k3'];
 
 const AIAND_API_KEY_CONSOLE_LINK = {
   host: 'console.aiand.com',
@@ -211,8 +210,9 @@ export const KNOWN_PROVIDERS: KnownProvider[] = [
     label: 'ai& — Anthropic',
     protocol: 'anthropic',
     baseUrl: 'https://api.aiand.com',
-    preferredModels: AIAND_PREFERRED_MODELS,
+    preferredModels: AIAND_FALLBACK_MODELS,
     apiKeyConsoleLink: AIAND_API_KEY_CONSOLE_LINK,
+    publicModelList: true,
   },
   {
     label: 'OpenAI',
@@ -241,8 +241,9 @@ export const KNOWN_PROVIDERS: KnownProvider[] = [
     label: 'ai& — OpenAI',
     protocol: 'openai',
     baseUrl: 'https://api.aiand.com/v1',
-    preferredModels: AIAND_PREFERRED_MODELS,
+    preferredModels: AIAND_FALLBACK_MODELS,
     apiKeyConsoleLink: AIAND_API_KEY_CONSOLE_LINK,
+    publicModelList: true,
   },
   {
     label: 'OpenRouter',

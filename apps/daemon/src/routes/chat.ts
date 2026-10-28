@@ -220,9 +220,11 @@ export function registerChatRoutes(app: Express, ctx: RegisterChatRoutesDeps) {
       );
     }
     // AIHubMix's catalogue (GET /api/v1/models?type=llm) is public, so its
-    // model list loads without a key. Every other protocol needs the key to
-    // hit its /v1/models endpoint.
-    const apiKeyRequired = protocol !== 'aihubmix' && protocol !== 'bedrock';
+    // model list loads without a key. OpenAI- and Anthropic-shape lists may
+    // also be public (ai&'s is): a keyless request goes out without
+    // credentials and a provider that needs a key answers 401 (auth_failed).
+    // Google, SenseAudio, Azure and Ollama still need the key.
+    const apiKeyRequired = !['aihubmix', 'bedrock', 'openai', 'anthropic'].includes(protocol);
     if (
       typeof body.baseUrl !== 'string' ||
       typeof body.apiKey !== 'string' ||

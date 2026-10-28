@@ -62,12 +62,10 @@ describe('apiProtocols table consistency', () => {
       apiKeyConsoleLink: consoleLink,
     });
     expect(anthropic?.preferredModels).toEqual(openai?.preferredModels);
-    expect(openai?.preferredModels.slice(0, 5)).toEqual([
-      'moonshotai/kimi-k3',
-      'zai-org/glm-5.3-flash',
-      'qwen/qwen3.8-27b',
-      'deepseek-ai/deepseek-v4.1-flash',
-      'google/gemma-4-31b-it',
-    ]);
+    // The live GET /v1/models list is the catalogue; the presets keep one
+    // fallback id for when that list cannot be fetched.
+    expect(openai?.publicModelList).toBe(true);
+    expect(anthropic?.publicModelList).toBe(true);
+    expect(openai?.preferredModels).toEqual(['moonshotai/kimi-k3']);
   });
 });

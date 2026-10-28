@@ -186,6 +186,11 @@ import { MemorySection } from './MemorySection';
 import { ByokConnectionTestControl } from './byok/ByokConnectionTestControl';
 import { ByokKeyField } from './byok/ByokKeyField';
 import { ByokModelField } from './byok/ByokModelField';
+import {
+  loadsModelsBeforeKey,
+  orderVisionModelsFirst,
+  suggestedIdsWithLiveList,
+} from './byok/public-model-list';
 import { ByokProviderBaseUrl } from './byok/ByokProviderBaseUrl';
 import { ByokProviderPicker } from './byok/ByokProviderPicker';
 import { byokPreflightBlockReason } from './byok/preflight';
@@ -1375,9 +1380,13 @@ function apiModelOptionLabel(
   model: ProviderModelOption,
   sourceLabel?: string,
 ): string {
-  const baseLabel = model.label && model.label !== model.id
-    ? `${model.label} (${model.id})`
-    : model.id;
+  // A listed name that only differs from the id in case (ai& lists
+  // "org/Model-Name" for "org/model-name") adds nothing; show it alone.
+  const baseLabel = !model.label || model.label === model.id
+    ? model.id
+    : model.label.toLowerCase() === model.id.toLowerCase()
+      ? model.label
+      : `${model.label} (${model.id})`;
   return sourceLabel ? `${baseLabel} · ${sourceLabel}` : baseLabel;
 }
 
@@ -3580,6 +3589,8 @@ export function SettingsDialog({
   const apiKeyDraftInvalid = byokBlockingDraftIssues.some((issue) =>
     issue.field === 'api_key' && issue.code !== 'api_key_required'
   );
+  // A preset whose model list is public loads it with no key at all.
+  const byokModelsLoadBeforeKey = loadsModelsBeforeKey(selectedProvider, cfg.apiKey);
   const byokModelFetchDraftValidation = useMemo(
     () => validateByokDraft(
       apiProtocol,
@@ -3589,7 +3600,7 @@ export function SettingsDialog({
         model: cfg.model,
       },
       {
-        requiresApiKey: byokRequiresApiKey,
+        requiresApiKey: byokRequiresApiKey && !byokModelsLoadBeforeKey,
         requireModel: false,
         keyValidationBaseUrl: byokKeyValidationBaseUrl,
       },
@@ -3597,6 +3608,7 @@ export function SettingsDialog({
     [
       apiProtocol,
       byokKeyValidationBaseUrl,
+      byokModelsLoadBeforeKey,
       byokRequiresApiKey,
       cfg.apiKey,
       cfg.baseUrl,
@@ -3620,10 +3632,12 @@ export function SettingsDialog({
     apiProtocol !== 'azure' &&
     apiProtocol !== 'ollama' &&
     !providerModelDiscoveryUnavailable;
-  const fetchedApiModelOptions =
-    providerModelDiscoveryUnavailable
+  const fetchedApiModelOptions = useMemo(
+    () => providerModelDiscoveryUnavailable
       ? []
-      : activeProviderModelsCache[providerModelsKey] ?? [];
+      : orderVisionModelsFirst(activeProviderModelsCache[providerModelsKey] ?? []),
+    [activeProviderModelsCache, providerModelDiscoveryUnavailable, providerModelsKey],
+  );
   const providerPreferredModels =
     selectedProvider?.preferredModels ?? SUGGESTED_MODELS_BY_PROTOCOL[apiProtocol];
   const providerManagedModelIds = useMemo(
@@ -3771,10 +3785,15 @@ export function SettingsDialog({
     if (byokFirstPartyBaseUrl?.hostTypo) return;
     if (blockingByokDraftIssues(byokModelFetchDraftValidation).length > 0) return;
     // AIHubMix needs no key and prefills its base URL, so there's nothing to
-    // debounce-commit — fetch as soon as the tab is selected. Every other
-    // protocol waits until the key/baseUrl inputs are committed (on blur) so we
-    // don't fire on each keystroke.
-    if (apiProtocol !== 'aihubmix' && providerModelsCommittedKey !== providerModelsKey) return;
+    // debounce-commit — fetch as soon as the tab is selected. A preset whose
+    // model list is public (ai&) does the same while its key is blank.
+    // Every other case waits until the key/baseUrl inputs are committed (on
+    // blur) so we don't fire on each keystroke.
+    if (
+      apiProtocol !== 'aihubmix' &&
+      !byokModelsLoadBeforeKey &&
+      providerModelsCommittedKey !== providerModelsKey
+    ) return;
     const timer = window.setTimeout(() => {
       void handleFetchProviderModels({ silent: true });
     }, 300);
@@ -3782,6 +3801,7 @@ export function SettingsDialog({
   }, [
     apiProtocol,
     byokFirstPartyBaseUrl?.hostTypo,
+    byokModelsLoadBeforeKey,
     cfg.apiKey,
     cfg.baseUrl,
     cfg.mode,
@@ -3839,14 +3859,22 @@ export function SettingsDialog({
           ? Array.from(new Set(selectedProvider.preferredModels))
           : [];
       }
-      return Array.from(new Set(
-        selectedProvider?.preferredModels.length
-          ? selectedProvider.preferredModels
-          : SUGGESTED_MODELS_BY_PROTOCOL[apiProtocol],
-      ));
+      return suggestedIdsWithLiveList(
+        selectedProvider,
+        Array.from(new Set(
+          selectedProvider?.preferredModels.length
+            ? selectedProvider.preferredModels
+            : SUGGESTED_MODELS_BY_PROTOCOL[apiProtocol],
+        )),
+        fetchedApiModelOptions.length,
+      );
     },
-    [apiProtocol, selectedProvider, providerModelDiscoveryUnavailable],
+    [apiProtocol, fetchedApiModelOptions.length, selectedProvider, providerModelDiscoveryUnavailable],
   );
+  // A list loaded without a key is the provider's public list, not "your
+  // account": label it like AIHubMix's until a key is entered.
+  const hideAccountModelSource =
+    hidesAccountModelSourceLabel(apiProtocol) || byokModelsLoadBeforeKey;
   const apiModelOptions = useMemo(
     () => mergeProviderModelOptions(
       fetchedApiModelOptions,
@@ -5724,7 +5752,7 @@ export function SettingsDialog({
                   ...m,
                   label: apiModelOptionLabel(
                     m,
-                    !hidesAccountModelSourceLabel(apiProtocol) &&
+                    !hideAccountModelSource &&
                     loadedAccountModelCount > 0
                       ? fetchedApiModelIds.has(m.id)
                         ? t('settings.modelSourceAccount')
@@ -5735,7 +5763,7 @@ export function SettingsDialog({
                 modelsLoadedFromAccountMessage={
                   loadedAccountModelCount > 0
                     ? t(
-                        hidesAccountModelSourceLabel(apiProtocol)
+                        hideAccountModelSource
                           ? 'settings.modelsLoadedCount'
                           : 'settings.modelsLoadedFromAccount',
                         {

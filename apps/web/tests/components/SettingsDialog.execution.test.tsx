@@ -998,6 +998,83 @@ describe('SettingsDialog execution settings BYOK interactions', () => {
     expect((screen.getByLabelText('Base URL') as HTMLInputElement).value).toBe(baseUrl);
   });
 
+  // Shaped like what the daemon returns for ai&'s public GET /v1/models: the
+  // listed name as the label and the vision flag from `capabilities`.
+  const AIAND_LIVE_MODELS = [
+    { id: 'deepseek-ai/deepseek-v4-pro', label: 'deepseek-ai/DeepSeek-V4-Pro', metadata: { vision: false } },
+    { id: 'zai-org/glm-5.3-flash', label: 'zai-org/glm-5.3-flash', metadata: { vision: true } },
+    { id: 'motif-technologies/motif-3', label: 'Motif-Technologies/Motif-3', metadata: { vision: false } },
+    { id: 'qwen/qwen3.8-27b', label: 'Qwen 3.8 27B', metadata: { vision: true } },
+  ];
+
+  it('loads the ai& model list as soon as the preset is selected, before a key exists', async () => {
+    fetchProviderModelsMock.mockResolvedValue({ ok: true, kind: 'success', latencyMs: 3, models: AIAND_LIVE_MODELS });
+    renderSettingsDialog({
+      apiProtocol: 'openai',
+      baseUrl: 'https://api.openai.com/v1',
+      model: 'gpt-4o',
+      apiProviderBaseUrl: 'https://api.openai.com/v1',
+    });
+
+    fireEvent.click(screen.getByRole('tab', { name: 'ai& — OpenAI' }));
+    expect((screen.getByLabelText('API key') as HTMLInputElement).value).toBe('');
+
+    // Public list: no account wording, because no key was used.
+    expect(await screen.findByText('✓ Loaded 4 models.')).toBeTruthy();
+    expect(fetchProviderModelsMock).toHaveBeenCalledWith(
+      expect.objectContaining({ protocol: 'openai', baseUrl: 'https://api.aiand.com/v1', apiKey: '' }),
+      expect.any(AbortSignal),
+    );
+    fireEvent.click(screen.getByRole('combobox', { name: 'Model' }));
+    const popover = screen.getByTestId('settings-byok-model-popover');
+    // Vision models first, list order kept inside each group, the listed
+    // name as the label (alone when it only differs from the id in case),
+    // and the preset's fallback id is gone because the live list lacks it.
+    expect(optionNames(popover)).toEqual([
+      'zai-org/glm-5.3-flash',
+      'Qwen 3.8 27B (qwen/qwen3.8-27b)',
+      'deepseek-ai/DeepSeek-V4-Pro',
+      'Motif-Technologies/Motif-3',
+      'Custom (type below)…',
+    ]);
+  });
+
+  it('keeps the fallback id while the ai& list is loading or unavailable, and refetches with the key', async () => {
+    fetchProviderModelsMock.mockResolvedValue({ ok: false, kind: 'upstream_unavailable', latencyMs: 3, detail: 'down' });
+    renderSettingsDialog();
+
+    fireEvent.click(screen.getByRole('tab', { name: 'ai& — Anthropic' }));
+    await waitFor(() => {
+      expect(fetchProviderModelsMock).toHaveBeenCalledWith(
+        expect.objectContaining({ protocol: 'anthropic', baseUrl: 'https://api.aiand.com', apiKey: '' }),
+        expect.any(AbortSignal),
+      );
+    });
+    expect(screen.getByRole('combobox', { name: 'Model' }).textContent).toContain('moonshotai/kimi-k3');
+
+    fetchProviderModelsMock.mockResolvedValue({
+      ok: true,
+      kind: 'success',
+      latencyMs: 3,
+      models: [...AIAND_LIVE_MODELS, { id: 'moonshotai/kimi-k3', label: 'moonshotai/kimi-k3', metadata: { vision: true } }],
+    });
+    fireEvent.change(screen.getByLabelText('API key'), { target: { value: 'sk-aiand-test' } });
+    fireEvent.blur(screen.getByLabelText('API key'));
+
+    expect(await screen.findByText('✓ Loaded 5 models from your account.')).toBeTruthy();
+    expect(fetchProviderModelsMock).toHaveBeenLastCalledWith(
+      expect.objectContaining({ protocol: 'anthropic', baseUrl: 'https://api.aiand.com', apiKey: 'sk-aiand-test' }),
+      expect.any(AbortSignal),
+    );
+    expect(screen.getByRole('combobox', { name: 'Model' }).textContent).toContain('moonshotai/kimi-k3');
+    fireEvent.click(screen.getByRole('combobox', { name: 'Model' }));
+    expect(optionNames(screen.getByTestId('settings-byok-model-popover')).slice(0, 3)).toEqual([
+      'zai-org/glm-5.3-flash · From your account',
+      'Qwen 3.8 27B (qwen/qwen3.8-27b) · From your account',
+      'moonshotai/kimi-k3 · From your account',
+    ]);
+  });
+
   it('keeps Anthropic-compatible gateway presets selectable', () => {
     renderSettingsDialog();
 
