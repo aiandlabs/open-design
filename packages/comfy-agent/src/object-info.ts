@@ -118,6 +118,8 @@ export type ServerCapabilities = {
   defaultModel: { family: string; model: string } | null;
   /** The model that runs instruction edits, when one is installed. */
   editModel: { family: string; model: string } | null;
+  /** Matting model for transparent assets (core RemoveBackground node), when one is installed. */
+  backgroundRemoval: { model: string } | null;
   loras: string[];
   upscaleModels: string[];
   samplers: string[];
@@ -134,6 +136,19 @@ export type ServerCapabilities = {
     modelUpscale: boolean;
   };
 };
+
+/** Core ComfyUI nodes a matting cut-out needs (no custom node). */
+export const MATTING_CLASSES = ["LoadBackgroundRemovalModel", "RemoveBackground", "InvertMask", "JoinImageWithAlpha"] as const;
+
+/**
+ * The installed background-removal (matting) model, when the server has one
+ * and every core node a cut-out graph uses. BiRefNet first.
+ */
+export function chooseBackgroundRemovalModel(info: ObjectInfo): string | undefined {
+  if (!MATTING_CLASSES.every((c) => hasClass(info, c))) return undefined;
+  const models = comboOptions(info, "LoadBackgroundRemovalModel", "bg_removal_name");
+  return models.find((m) => /birefnet/i.test(m)) ?? models[0];
+}
 
 export function summarizeCapabilities(info: ObjectInfo): ServerCapabilities {
   const has = (...names: string[]) => names.every((n) => hasClass(info, n));
@@ -152,6 +167,7 @@ export function summarizeCapabilities(info: ObjectInfo): ServerCapabilities {
     modelSets,
     defaultModel: first ? { family: first.family, model: first.model } : ckptTxt2img && sdxl ? { family: "checkpoint", model: sdxl } : null,
     editModel: editSet ? { family: editSet.family, model: editSet.model } : null,
+    backgroundRemoval: ((model) => (model ? { model } : null))(chooseBackgroundRemovalModel(info)),
     loras,
     upscaleModels,
     samplers: comboOptions(info, "KSampler", "sampler_name"),

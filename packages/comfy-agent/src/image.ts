@@ -444,6 +444,315 @@ export function keyResidue(img: RgbaImage, key: Rgb, maxDistance = 0.22): KeyRes
   return visible ? { keyTinted: tinted / visible, haze: partial / visible } : { keyTinted: 0, haze: 0 };
 }
 
+/**
+ * Clean up a matting model's cut-out of an image rendered on a plain
+ * backdrop. A partly covered edge pixel holds `alpha × subject + (1 − alpha)
+ * × backdrop`; solving for the subject colour removes the light (or dark)
+ * halo the backdrop would otherwise leave around the subject on any other
+ * background. Near-invisible specks (alpha < 8) become fully transparent.
+ */
+export function decontaminateMatte(img: RgbaImage, backdrop: Rgb): RgbaImage {
+  const data = new Uint8Array(img.data);
+  const bg = [backdrop.r, backdrop.g, backdrop.b];
+  for (let i = 0; i < data.length; i += 4) {
+    const a8 = data[i + 3]!;
+    if (a8 < 8) {
+      data[i + 3] = 0;
+      continue;
+    }
+    if (a8 >= 250) continue;
+    const a = a8 / 255;
+    for (let c = 0; c < 3; c += 1) data[i + c] = clamp255((data[i + c]! - (1 - a) * bg[c]!) / a);
+  }
+  return { width: img.width, height: img.height, data };
+}
+
+export type MatteResidue = {
+  /** Fraction of edge pixels (visible, within 2 px of transparency) whose colour is near the backdrop. */
+  fringe: number;
+  /** Fraction of all visible pixels whose colour is near the backdrop: leftover backdrop, floor or shadow. */
+  backdropTinted: number;
+  /**
+   * Fraction of visible pixels that are partly transparent (16 ≤ alpha < 224)
+   * away from the edge band: a translucent shadow, glow or haze. The soft
+   * edge itself is not counted, so thin subjects (branches, outlines) are not
+   * penalised for being mostly edge.
+   */
+  haze: number;
+};
+
+/**
+ * Measure what a matting model left behind around a subject rendered on a
+ * plain backdrop. A clean matte has no backdrop-coloured edge ring, no
+ * backdrop-coloured patches, and partial alpha only in a thin edge band. The
+ * planner picks a backdrop far from the subject's colours, so subject pixels
+ * near the backdrop colour are residue, not subject.
+ */
+export function matteResidue(img: RgbaImage, backdrop: Rgb, maxDistance = 0.12): MatteResidue {
+  const { width: w, height: h, data } = img;
+  const visibleAt = (x: number, y: number) => x >= 0 && y >= 0 && x < w && y < h && data[(y * w + x) * 4 + 3]! >= 16;
+  const ring = 2;
+  let visible = 0;
+  let partial = 0;
+  let tinted = 0;
+  let edge = 0;
+  let edgeTinted = 0;
+  for (let y = 0; y < h; y += 1) {
+    for (let x = 0; x < w; x += 1) {
+      const i = (y * w + x) * 4;
+      const a = data[i + 3]!;
+      if (a < 16) continue;
+      visible += 1;
+      const near = colorDistance({ r: data[i]!, g: data[i + 1]!, b: data[i + 2]! }, backdrop) <= maxDistance;
+      if (near) tinted += 1;
+      let onEdge = false;
+      for (let dy = -ring; dy <= ring && !onEdge; dy += 1) {
+        for (let dx = -ring; dx <= ring; dx += 1) {
+          if ((dx || dy) && !visibleAt(x + dx, y + dy)) {
+            onEdge = true;
+            break;
+          }
+        }
+      }
+      if (onEdge) {
+        edge += 1;
+        if (near) edgeTinted += 1;
+      } else if (a < 224) {
+        partial += 1;
+      }
+    }
+  }
+  return {
+    fringe: edge ? edgeTinted / edge : 0,
+    backdropTinted: visible ? tinted / visible : 0,
+    haze: visible ? partial / visible : 0,
+  };
+}
+
+/**
+ * Lay images out left to right, top to bottom, each fitted into a `cell` px
+ * square on `background`, `perRow` to a row, with a magenta gap that is not
+ * part of any image. Used to show reference candidates or a set of icons to a
+ * vision model in one image.
+ */
+export function contactSheet(images: RgbaImage[], cell = 192, perRow = 4, background: Rgb = { r: 255, g: 255, b: 255 }): RgbaImage {
+  const gap = 4;
+  const cols = Math.max(1, Math.min(perRow, images.length));
+  const rows = Math.max(1, Math.ceil(images.length / cols));
+  const sheet = createImage(cols * cell + (cols - 1) * gap, rows * cell + (rows - 1) * gap, { r: 255, g: 0, b: 255, a: 255 });
+  for (const [k, img] of images.entries()) {
+    const panel = compositeOver(fitWithin(img, cell), background);
+    const x0 = (k % cols) * (cell + gap);
+    const y0 = Math.floor(k / cols) * (cell + gap);
+    for (let y = 0; y < cell; y += 1) {
+      for (let x = 0; x < cell; x += 1) {
+        const px = x - Math.floor((cell - panel.width) / 2);
+        const py = y - Math.floor((cell - panel.height) / 2);
+        const inside = px >= 0 && py >= 0 && px < panel.width && py < panel.height;
+        const src = inside ? (py * panel.width + px) * 4 : -1;
+        sheet.data.set(src >= 0 ? panel.data.subarray(src, src + 4) : [background.r, background.g, background.b, 255], ((y0 + y) * sheet.width + x0 + x) * 4);
+      }
+    }
+  }
+  return sheet;
+}
+
+// ---------------------------------------------------------------------------
+// Reference similarity
+
+export type ReferenceSimilarity = {
+  /** Intersection over union of the two subjects' silhouettes, each scaled to its own bounding box. */
+  silhouetteIoU: number;
+  /** Mean SSIM of the subjects' colour-edge maps (where parts of the drawing meet), also bounding-box normalised. */
+  structure: number;
+  /** Both above the near-copy limits: the output reproduces the reference rather than redrawing it. */
+  nearCopy: boolean;
+};
+
+/**
+ * Near-copy limits. A reference supplies shape and concept, so a matching
+ * silhouette alone is expected; a near-copy also keeps the reference's
+ * internal structure. Calibrated so that the same emoji drawn by different
+ * artists (Apple, Fluent, Noto) is not a near-copy, and a resized, recoloured
+ * copy is: on 60 emoji, 0 of 178 cross-artist pairs and 681 of 716 copies are
+ * flagged (evals/design-assets/REFERENCE_CALIBRATION.md).
+ */
+export const NEAR_COPY_MIN_IOU = 0.8;
+export const NEAR_COPY_MIN_STRUCTURE = 0.7;
+
+const SIM_SIZE = 64;
+
+/** Silhouette of the subject: alpha when the image has transparency, else difference from the border colour. */
+function subjectMask(img: RgbaImage): Uint8Array {
+  const n = img.width * img.height;
+  const mask = new Uint8Array(n);
+  let hasAlpha = false;
+  for (let i = 3; i < img.data.length; i += 4) {
+    if (img.data[i]! < 250) {
+      hasAlpha = true;
+      break;
+    }
+  }
+  if (hasAlpha) {
+    for (let p = 0; p < n; p += 1) mask[p] = img.data[p * 4 + 3]! >= 128 ? 1 : 0;
+    return mask;
+  }
+  const border = estimateKeyColor(img, { r: 255, g: 255, b: 255 }, 1).color;
+  for (let p = 0; p < n; p += 1) {
+    const c = { r: img.data[p * 4]!, g: img.data[p * 4 + 1]!, b: img.data[p * 4 + 2]! };
+    mask[p] = colorDistance(c, border) > 0.12 ? 1 : 0;
+  }
+  return mask;
+}
+
+/**
+ * Colour-edge strength of a normalised subject: the largest per-channel Sobel
+ * magnitude, lightly blurred. Edges stay where a drawing's parts meet when it
+ * is recoloured, so comparing edge maps catches a copy in a new palette.
+ */
+function edgeMap(rgb: Float32Array, size: number): Float32Array {
+  const g = new Float32Array(size * size);
+  const at = (x: number, y: number, c: number) => rgb[(Math.min(size - 1, Math.max(0, y)) * size + Math.min(size - 1, Math.max(0, x))) * 3 + c]!;
+  for (let y = 0; y < size; y += 1) {
+    for (let x = 0; x < size; x += 1) {
+      let best = 0;
+      for (let c = 0; c < 3; c += 1) {
+        const gx = at(x + 1, y - 1, c) + 2 * at(x + 1, y, c) + at(x + 1, y + 1, c) - at(x - 1, y - 1, c) - 2 * at(x - 1, y, c) - at(x - 1, y + 1, c);
+        const gy = at(x - 1, y + 1, c) + 2 * at(x, y + 1, c) + at(x + 1, y + 1, c) - at(x - 1, y - 1, c) - 2 * at(x, y - 1, c) - at(x + 1, y - 1, c);
+        best = Math.max(best, Math.hypot(gx, gy));
+      }
+      g[y * size + x] = Math.min(255, best / 4);
+    }
+  }
+  const out = new Float32Array(size * size);
+  for (let y = 0; y < size; y += 1) {
+    for (let x = 0; x < size; x += 1) {
+      let s = 0;
+      let n = 0;
+      for (let dy = -1; dy <= 1; dy += 1) for (let dx = -1; dx <= 1; dx += 1) {
+        const yy = y + dy;
+        const xx = x + dx;
+        if (yy < 0 || xx < 0 || yy >= size || xx >= size) continue;
+        s += g[yy * size + xx]!;
+        n += 1;
+      }
+      out[y * size + x] = s / n;
+    }
+  }
+  return out;
+}
+
+/** The subject cut to its bounding box and fitted (aspect kept, centred) into SIM_SIZE², as mask and colour-edge map. */
+function normalizedSubject(img: RgbaImage): { mask: Float32Array; edges: Float32Array } {
+  const m = subjectMask(img);
+  let x0 = img.width;
+  let y0 = img.height;
+  let x1 = -1;
+  let y1 = -1;
+  for (let y = 0; y < img.height; y += 1) {
+    for (let x = 0; x < img.width; x += 1) {
+      if (!m[y * img.width + x]) continue;
+      if (x < x0) x0 = x;
+      if (y < y0) y0 = y;
+      if (x > x1) x1 = x;
+      if (y > y1) y1 = y;
+    }
+  }
+  const mask = new Float32Array(SIM_SIZE * SIM_SIZE);
+  const rgb = new Float32Array(SIM_SIZE * SIM_SIZE * 3).fill(128);
+  if (x1 < 0) return { mask, edges: edgeMap(rgb, SIM_SIZE) };
+  const w = x1 - x0 + 1;
+  const h = y1 - y0 + 1;
+  // Subject pixels as RGBA with the mask as alpha, so resizing averages only subject colour.
+  const sub = crop(img, x0, y0, w, h);
+  for (let y = 0; y < h; y += 1) for (let x = 0; x < w; x += 1) sub.data[(y * w + x) * 4 + 3] = m[(y0 + y) * img.width + x0 + x] ? 255 : 0;
+  const scale = SIM_SIZE / Math.max(w, h);
+  const tw = Math.max(1, Math.round(w * scale));
+  const th = Math.max(1, Math.round(h * scale));
+  const small = resize(sub, tw, th);
+  const ox = Math.floor((SIM_SIZE - tw) / 2);
+  const oy = Math.floor((SIM_SIZE - th) / 2);
+  for (let y = 0; y < th; y += 1) {
+    for (let x = 0; x < tw; x += 1) {
+      const i = (y * tw + x) * 4;
+      const a = small.data[i + 3]! / 255;
+      const p = (oy + y) * SIM_SIZE + ox + x;
+      mask[p] = a;
+      for (let c = 0; c < 3; c += 1) rgb[p * 3 + c] = small.data[i + c]! * a + 128 * (1 - a);
+    }
+  }
+  return { mask, edges: edgeMap(rgb, SIM_SIZE) };
+}
+
+function hasTransparency(img: RgbaImage): boolean {
+  for (let i = 3; i < img.data.length; i += 4) if (img.data[i]! < 250) return true;
+  return false;
+}
+
+function meanSsim(a: Float32Array, b: Float32Array, size: number, win = 8, stride = 4): number {
+  const c1 = (0.01 * 255) ** 2;
+  const c2 = (0.03 * 255) ** 2;
+  let total = 0;
+  let count = 0;
+  for (let y = 0; y + win <= size; y += stride) {
+    for (let x = 0; x + win <= size; x += stride) {
+      let ma = 0;
+      let mb = 0;
+      for (let dy = 0; dy < win; dy += 1) for (let dx = 0; dx < win; dx += 1) {
+        ma += a[(y + dy) * size + x + dx]!;
+        mb += b[(y + dy) * size + x + dx]!;
+      }
+      const n = win * win;
+      ma /= n;
+      mb /= n;
+      let va = 0;
+      let vb = 0;
+      let cov = 0;
+      for (let dy = 0; dy < win; dy += 1) for (let dx = 0; dx < win; dx += 1) {
+        const da = a[(y + dy) * size + x + dx]! - ma;
+        const db = b[(y + dy) * size + x + dx]! - mb;
+        va += da * da;
+        vb += db * db;
+        cov += da * db;
+      }
+      va /= n - 1;
+      vb /= n - 1;
+      cov /= n - 1;
+      total += ((2 * ma * mb + c1) * (2 * cov + c2)) / ((ma * ma + mb * mb + c1) * (va + vb + c2));
+      count += 1;
+    }
+  }
+  return count ? total / count : 0;
+}
+
+/**
+ * How closely an output reproduces a reference image. Both subjects are cut to
+ * their bounding boxes and scaled to the same size first, so moving or
+ * resizing a copy does not hide it.
+ */
+export function referenceSimilarity(output: RgbaImage, reference: RgbaImage): ReferenceSimilarity {
+  // An opaque output's subject is found by its difference from the border
+  // colour; flatten the reference onto that colour so both are found alike.
+  const ref = hasTransparency(output) ? reference : compositeOver(reference, estimateKeyColor(output, { r: 255, g: 255, b: 255 }, 1).color);
+  const a = normalizedSubject(output);
+  const b = normalizedSubject(ref);
+  let inter = 0;
+  let union = 0;
+  for (let p = 0; p < a.mask.length; p += 1) {
+    const ma = a.mask[p]! >= 0.5;
+    const mb = b.mask[p]! >= 0.5;
+    if (ma && mb) inter += 1;
+    if (ma || mb) union += 1;
+  }
+  const silhouetteIoU = union ? inter / union : 0;
+  const structure = meanSsim(a.edges, b.edges, SIM_SIZE);
+  return {
+    silhouetteIoU: Number(silhouetteIoU.toFixed(4)),
+    structure: Number(structure.toFixed(4)),
+    nearCopy: silhouetteIoU >= NEAR_COPY_MIN_IOU && structure >= NEAR_COPY_MIN_STRUCTURE,
+  };
+}
+
 export type NormalizedRect = { x: number; y: number; width: number; height: number };
 
 /**

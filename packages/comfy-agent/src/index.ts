@@ -10,10 +10,14 @@ export * from "./image.js";
 export * from "./llm.js";
 export * from "./models.js";
 export * from "./config.js";
+export * from "./references.js";
+export { openSbixFont, type SbixFont } from "./emoji-font.js";
+export { parsePathData, rasterizeSvg, type RasterizeOptions } from "./svg-raster.js";
 export {
   generateAsset,
   postProcess,
   deterministicChecks,
+  SET_CONSISTENCY_ITEM,
   type AssetLimits,
   type AssetLoopOptions,
   type AssetRequest,
@@ -22,8 +26,14 @@ export {
   type CheckResult,
   type ChecklistItem,
   type CriticItem,
+  type CutoutInfo,
+  type CutoutMethod,
+  type CutoutMode,
   type LlmCallTrace,
+  type ReferenceOptions,
+  type ReferenceProvider,
   type RoundTrace,
+  type SetReference,
   type StopReason,
 } from "./loop.js";
 export { runWorkflow, type WorkflowRunInput, type WorkflowRunResult } from "./workflow-run.js";

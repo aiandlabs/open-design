@@ -12,6 +12,23 @@ export const KEY_COLORS: Record<string, string> = {
   "#00FFFF": "bright cyan",
 };
 
+/**
+ * Backdrops for a matting cut-out. A matting model separates a subject from
+ * any plain background, so these are ordinary studio backdrops that diffusion
+ * models render cleanly; the planner picks one that contrasts with the subject.
+ */
+export const MATTE_BACKDROPS: Record<string, string> = {
+  "#FFFFFF": "white",
+  "#808080": "mid-grey",
+  "#000000": "black",
+};
+
+/** Name of a key colour or matte backdrop, for prompts and edit instructions. */
+export function backdropName(hex: string): string | undefined {
+  const h = hex.toUpperCase();
+  return KEY_COLORS[h] ?? MATTE_BACKDROPS[h];
+}
+
 export const PLAN_TOOL = "submit_plan";
 export const REPAIR_TOOL = "submit_edits";
 export const CRITIC_TOOL = "submit_grades";
@@ -30,7 +47,9 @@ Checklist rules:
 Prompt rules depend on the model family:
 - Stable Diffusion checkpoints (sd15, sdxl): positive_prompt is a comma-separated visual description, most important first. State counts explicitly ("a single", "one", "solo"). No instructions, no negations. negative_prompt lists things to avoid, comma-separated (for example "multiple objects, duplicates, text, watermark, blurry").
 - Models with a language-model text encoder (zimage, flux2_klein, ming): positive_prompt is one to three plain descriptive sentences, the subject and its count first, then style, colours, composition and lighting. These models read sentences and follow counts and stated absences well ("The background is empty", "There is no text"). They are distilled and ignore the negative prompt: still fill negative_prompt, but put every requirement in the positive prompt. Do not set steps, cfg, sampler_name or scheduler for these families; their values are fixed.
-- When the asset needs a transparent background, describe the subject only; the system adds the flat key-colour background phrase itself. Choose key_color from the allowed list so it is far from every colour in the subject.`;
+- Reference candidates (emoji and icon-font symbols), when the user message lists them, are shown in a numbered sheet. Pick at most the number allowed whose shape and concept best match the request, and give a short reason for each in references. Pick none when no candidate shows the requested subject: a wrong reference is worse than none. A reference supplies shape and concept only; never describe its colours or rendering in positive_prompt, describe the requested style instead. The system adds the reference instructions to the prompt itself.
+- Icons already made for the same set, when shown, fix the set's style. Describe that style (rendering, palette, outline weight, lighting, level of detail) in positive_prompt so this icon matches it, while drawing its own subject.
+- When the asset needs a transparent background, describe the subject only; the system adds the plain background phrase itself. The user message says how the subject is cut out (a matting model, or chroma keying) and lists the allowed background colours. Choose key_color from that list so it is far from every colour in the subject, including its outline, highlights and any steam, smoke or glow: a white or cream subject needs a dark backdrop, a black subject a light one.`;
 
 export const REPAIR_SYSTEM = `You repair an image generation on a local ComfyUI server. You receive the request, the checklist, the current graph settings, the critic's grades with repair hints, the code checks, the image, and which edits this server supports.
 Return a small list of typed edits that are most likely to make the failing checklist items pass without breaking the passing ones.
@@ -43,13 +62,15 @@ Guidance:
   - Otherwise use img2img_from_previous with denoise 0.45-0.7, or inpaint_previous on the region (x, y, width, height are fractions 0-1 of the image) with denoise 0.6-0.9. These two exist only for sdxl and sd15.
   - After edit_previous, a set_prompt starts again from text-to-image with the new prompt.
 - Prompt adherence is weak on sdxl/sd15: raise cfg slightly (at most 9 for SDXL) or steps. Never change steps, cfg, sampler or scheduler for zimage, flux2_klein or ming: they are distilled and those values are fixed.
-- Background not flat or not clean for a transparent asset: strengthen the prompt, or set_key_color to a colour further from the subject, or edit_previous ("Make the background a plain flat bright green with no shadow").
+- Background not flat or not clean for a transparent asset (a fringe, halo, shadow or leftover background in the cut-out): strengthen the prompt, or set_key_color to an allowed colour further from the subject, or edit_previous ("Make the background plain flat white with no shadow").
+- reference_copy failing: the output reproduces a reference image instead of redrawing it. Use drop_reference with that reference's id, and restate the requested style in set_prompt. Do not keep a reference that was copied.
 - Only use samplers, schedulers, LoRAs, checkpoints and upscale models from the lists you are given.
 - Prefer at most 4 edits. Do not repeat an edit that already failed in an earlier round.`;
 
 export const CRITIC_SYSTEM = `You are a strict visual QA reviewer. You receive one image and a checklist.
 Grade each checklist item pass or fail by looking at the image only. Pass an item only when it is clearly true. For every failed item give one short concrete repair hint (what is wrong and what should change).
-If the asset is a cut-out, it is shown twice side by side: on plain white (left) and on near-black (right), split by a thin magenta divider that is not part of the asset. The white and near-black areas are the transparent background; judge the subject and the cleanliness of its edges, not those backgrounds.`;
+If the asset is a cut-out, it is shown twice side by side: on plain white (left) and on near-black (right), split by a thin magenta divider that is not part of the asset. The white and near-black areas are the transparent background; judge the subject and the cleanliness of its edges, not those backgrounds.
+When a second image shows icons already made for the same set, use it only for the set_consistency item: the asset must match their style (rendering, palette, outline weight, lighting, level of detail) while showing its own subject.`;
 
 const editOps = [
   "set_prompt",
@@ -67,6 +88,7 @@ const editOps = [
   "inpaint_previous",
   "edit_previous",
   "set_key_color",
+  "drop_reference",
 ];
 
 export const PLAN_SCHEMA: JsonSchema = {
@@ -82,12 +104,22 @@ export const PLAN_SCHEMA: JsonSchema = {
     },
     positive_prompt: { type: "string" },
     negative_prompt: { type: "string" },
-    key_color: { type: "string", enum: Object.keys(KEY_COLORS), description: "Only when transparency is required." },
+    key_color: {
+      type: "string",
+      enum: [...Object.keys(KEY_COLORS), ...Object.keys(MATTE_BACKDROPS)],
+      description: "Only when transparency is required: a colour from the list the user message allows.",
+    },
     steps: { type: "integer" },
     cfg: { type: "number" },
     sampler_name: { type: "string" },
     scheduler: { type: "string" },
     notes: { type: "string" },
+    references: {
+      type: "array",
+      description: "Only when reference candidates are listed: the chosen candidate ids, with a short reason each. Empty when none fits.",
+      items: { type: "object", properties: { id: { type: "string" }, why: { type: "string" } }, required: ["id"] },
+    },
+    reference_note: { type: "string", description: "Why no reference was chosen, when candidates were listed but none fits." },
   },
   required: ["checklist", "positive_prompt", "negative_prompt"],
 };
@@ -103,6 +135,7 @@ export const REPAIR_SCHEMA: JsonSchema = {
         properties: {
           op: { type: "string", enum: editOps },
           text: { type: "string" },
+          id: { type: "string", description: "drop_reference: the id of the reference to stop using." },
           instruction: { type: "string", description: "edit_previous: one short imperative edit instruction." },
           steps: { type: "integer" },
           cfg: { type: "number" },
@@ -121,7 +154,7 @@ export const REPAIR_SCHEMA: JsonSchema = {
           y: { type: "number" },
           width: { type: "number" },
           height: { type: "number" },
-          hex: { type: "string", enum: Object.keys(KEY_COLORS) },
+          hex: { type: "string", enum: [...Object.keys(KEY_COLORS), ...Object.keys(MATTE_BACKDROPS)] },
         },
         required: ["op"],
       },
@@ -157,12 +190,12 @@ export const CRITIC_SCHEMA: JsonSchema = {
  * subject prompts push trailing text past the first 77-token chunk.
  */
 export function keyColorLead(hex: string): string {
-  const name = KEY_COLORS[hex.toUpperCase()] ?? "flat solid";
+  const name = backdropName(hex) ?? "flat solid";
   return `(isolated on a plain flat solid ${name} background:1.2)`;
 }
 
 export function keyColorPhrase(hex: string): string {
-  const name = KEY_COLORS[hex.toUpperCase()] ?? "flat solid";
+  const name = backdropName(hex) ?? "flat solid";
   return `uniform ${name} backdrop, studio cut-out, no shadow, no floor`;
 }
 
@@ -171,8 +204,31 @@ export function keyColorPhrase(hex: string): string {
  * (Z-Image, FLUX.2, Ming-Image), which read `(text:1.2)` weights as literal text.
  */
 export function keyColorSentence(hex: string): string {
-  const name = KEY_COLORS[hex.toUpperCase()] ?? "flat solid";
+  const name = backdropName(hex) ?? "flat solid";
   return `The subject is isolated on a plain, flat, uniform ${name} background that fills the whole frame, with no shadow, no floor, no gradient and no other objects.`;
+}
+
+/**
+ * Prompt sentences that say what each reference image is for. Shape
+ * references come first ("Image 1"), then icons from the same set, in the
+ * order the graph attaches them.
+ */
+export function referenceSteering(shapeCount: number, setCount: number): string {
+  const parts: string[] = [];
+  const list = (from: number, n: number) => (n === 1 ? `Image ${from}` : `Images ${from}–${from + n - 1}`);
+  if (shapeCount > 0) {
+    parts.push(
+      `${list(1, shapeCount)} ${shapeCount === 1 ? "is a reference" : "are references"} for the subject's shape and concept only. ` +
+        "Redraw the subject as a new drawing in the style, colours, line weight and rendering described here; do not copy the reference's drawing, colours, outlines, shading or details.",
+    );
+  }
+  if (setCount > 0) {
+    parts.push(
+      `${list(shapeCount + 1, setCount)} ${setCount === 1 ? "is an icon" : "are icons"} already made for the same set. ` +
+        "Match their visual style exactly: rendering, palette, outline weight, corner rounding, lighting and level of detail. Draw this icon's own subject, not theirs.",
+    );
+  }
+  return parts.join(" ");
 }
 
 export type PromptStyle = "tags" | "sentences";
@@ -184,10 +240,11 @@ export function composeKeyedPrompt(subject: string, hex: string | undefined, sty
   return `${keyColorLead(hex)}, ${subject}, ${keyColorPhrase(hex)}`;
 }
 
-/** Remove what {@link composeKeyedPrompt} added, if the planner echoed it back. */
+/** Remove what {@link composeKeyedPrompt} and {@link referenceSteering} added, if the planner echoed it back. */
 export function stripKeyedPrompt(text: string): string {
-  let out = text;
-  for (const hex of Object.keys(KEY_COLORS)) {
+  let out = text.replace(/\s*Images? \d+(?:–\d+)? (?:is|are) (?:a )?references? for the subject's shape and concept only\.[^.]*\./g, "")
+    .replace(/\s*Images? \d+(?:–\d+)? (?:is an icon|are icons) already made for the same set\.[^.]*\.[^.]*\./g, "");
+  for (const hex of [...Object.keys(KEY_COLORS), ...Object.keys(MATTE_BACKDROPS)]) {
     out = out.replace(`${keyColorLead(hex)}, `, "").replace(`, ${keyColorPhrase(hex)}`, "").replace(` ${keyColorSentence(hex)}`, "").replace(keyColorSentence(hex), "");
   }
   return out.trim();

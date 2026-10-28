@@ -71,7 +71,16 @@ export type BaseGraphParams = SamplingParams & {
   family?: ModelFamily;
   textEncoder?: string;
   vae?: string;
+  /**
+   * Images already on the server (`LoadImage` names) that condition the
+   * generation, in order: "image 1", "image 2", ... in the prompt. FLUX.2
+   * [klein] only (ReferenceLatent); the output keeps the requested size.
+   */
+  references?: string[];
 };
+
+/** Families whose text-to-image graph can take reference images. */
+export const REFERENCE_FAMILIES: readonly ModelFamily[] = ["flux2_klein"];
 
 /** The model a base graph runs: a single-file checkpoint or a split-loader model set. */
 export type ModelChoice = {
@@ -200,6 +209,9 @@ const COMMON_ROLES: Roles = { checkpoint: "ckpt", positive: "pos", negative: "ne
 
 export function buildTxt2Img(p: BaseGraphParams): GraphDoc {
   const family = p.family ?? detectFamily(p.checkpoint);
+  if (p.references?.length && !REFERENCE_FAMILIES.includes(family)) {
+    throw new GraphEditError("build_graph", `${familySpec(family)?.label ?? family} cannot take reference images; only ${REFERENCE_FAMILIES.join(", ")} can`);
+  }
   if (isSplitFamily(family)) return buildSplitTxt2Img(family, p);
   const graph = common(p);
   graph.latent = { class_type: "EmptyLatentImage", inputs: { width: p.width, height: p.height, batch_size: 1 } };
@@ -265,6 +277,28 @@ function splitTail(g: ApiWorkflow, prefix: string | undefined): void {
   g.save = { class_type: "SaveImage", inputs: { images: ["decode", 0], filename_prefix: prefix ?? "comfy-agent" } };
 }
 
+/**
+ * FLUX.2 [klein] reference images, as its multi-reference edit template wires
+ * them: each image is scaled to about 0.5 MP (in multiples of 16), VAE-encoded
+ * and chained with ReferenceLatent onto both the positive and the zeroed
+ * negative conditioning. Returns the conditioning links for the guider.
+ */
+function attachReferences(g: ApiWorkflow, images: string[]): [[string, number], [string, number]] {
+  let pos: [string, number] = ["pos", 0];
+  let neg: [string, number] = ["neg", 0];
+  for (const [i, image] of images.entries()) {
+    const n = i + 1;
+    g[`ref${n}Load`] = { class_type: "LoadImage", inputs: { image }, _meta: { title: `Reference ${n}` } };
+    g[`ref${n}Scale`] = { class_type: "ImageScaleToTotalPixels", inputs: { image: [`ref${n}Load`, 0], upscale_method: "lanczos", megapixels: 0.5, resolution_steps: 16 } };
+    g[`ref${n}Encode`] = { class_type: "VAEEncode", inputs: { pixels: [`ref${n}Scale`, 0], vae: ["vae", 0] } };
+    g[`ref${n}Pos`] = { class_type: "ReferenceLatent", inputs: { conditioning: pos, latent: [`ref${n}Encode`, 0] } };
+    g[`ref${n}Neg`] = { class_type: "ReferenceLatent", inputs: { conditioning: neg, latent: [`ref${n}Encode`, 0] } };
+    pos = [`ref${n}Pos`, 0];
+    neg = [`ref${n}Neg`, 0];
+  }
+  return [pos, neg];
+}
+
 function customSampler(g: ApiWorkflow, latent: [string, number]): void {
   g.sampler = {
     class_type: "SamplerCustomAdvanced",
@@ -297,7 +331,8 @@ function buildSplitTxt2Img(family: SplitFamily, p: BaseGraphParams): GraphDoc {
     g.sigmas = { class_type: "Flux2Scheduler", inputs: { steps: p.steps, width: p.width, height: p.height } };
     g.noise = { class_type: "RandomNoise", inputs: { noise_seed: p.seed } };
     g.select = { class_type: "KSamplerSelect", inputs: { sampler_name: p.sampler } };
-    g.guider = { class_type: "CFGGuider", inputs: { model: ["unet", 0], positive: ["pos", 0], negative: ["neg", 0], cfg: p.cfg } };
+    const [positive, negative] = attachReferences(g, p.references ?? []);
+    g.guider = { class_type: "CFGGuider", inputs: { model: ["unet", 0], positive, negative, cfg: p.cfg } };
     customSampler(g, ["latent", 0]);
     roles = { ...CUSTOM_ROLES, latent: "latent" };
   } else {
@@ -424,6 +459,33 @@ export function chooseModel(info: ObjectInfo, preferred?: string): ModelChoice {
 /** The strongest installed model that can run instruction edits, if any. */
 export function chooseEditModel(info: ObjectInfo): ModelChoice | undefined {
   return installedModels(info).find((m) => m.edit);
+}
+
+export { chooseBackgroundRemovalModel } from "./object-info.js";
+
+/**
+ * Matting cut-out: every SaveImage saves its image with the matting model's
+ * foreground as the alpha channel (LoadBackgroundRemovalModel →
+ * RemoveBackground → InvertMask → JoinImageWithAlpha). JoinImageWithAlpha
+ * stores `1 − mask`, so the foreground mask is inverted first. The RGB channels
+ * stay the original render, so the opaque image can be recovered from the
+ * output. Returns a new graph; the input is not changed.
+ */
+export function addBackgroundRemoval(graph: ApiWorkflow, model: string): ApiWorkflow {
+  const g = structuredClone(graph);
+  const saves = Object.keys(g).filter((id) => g[id]!.class_type === "SaveImage");
+  if (saves.length === 0) throw new GraphEditError("background_removal", "the graph has no SaveImage node");
+  g.matteModel = { class_type: "LoadBackgroundRemovalModel", inputs: { bg_removal_name: model }, _meta: { title: "Matting model" } };
+  for (const [n, id] of saves.entries()) {
+    const src = g[id]!.inputs.images;
+    if (!isLink(src)) throw new GraphEditError("background_removal", `SaveImage ${id} has no image input`);
+    const sfx = n === 0 ? "" : String(n + 1);
+    g[`matteMask${sfx}`] = { class_type: "RemoveBackground", inputs: { bg_removal_model: ["matteModel", 0], image: src } };
+    g[`matteAlpha${sfx}`] = { class_type: "InvertMask", inputs: { mask: [`matteMask${sfx}`, 0] } };
+    g[`matteJoin${sfx}`] = { class_type: "JoinImageWithAlpha", inputs: { image: src, alpha: [`matteAlpha${sfx}`, 0] } };
+    g[id]!.inputs.images = [`matteJoin${sfx}`, 0];
+  }
+  return g;
 }
 
 /** Which base graphs this server can run. */

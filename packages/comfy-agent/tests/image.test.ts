@@ -8,13 +8,16 @@ import {
   createImage,
   cutoutSheet,
   decodePng,
+  decontaminateMatte,
   encodePng,
   estimateKeyColor,
   isPng,
   keyResidue,
+  matteResidue,
   parseHexColor,
   pngSize,
   rectMask,
+  referenceSimilarity,
   resize,
   toHexColor,
   type RgbaImage,
@@ -192,5 +195,106 @@ describe("cut-out residue", () => {
     expect(sheet.height).toBe(10);
     expect(px(sheet, 0, 0)).toEqual([255, 255, 255, 255]);
     expect(px(sheet, 64 + 4, 0)).toEqual([24, 24, 24, 255]);
+  });
+});
+
+describe("reference similarity (near-copy guard)", () => {
+  /** A shape drawn into a transparent canvas: disc, square or a disc with a notch. */
+  function shape(size: number, kind: "disc" | "square" | "notched", color: [number, number, number], offset = 0, scale = 1): RgbaImage {
+    const img = createImage(size, size, { r: 0, g: 0, b: 0, a: 0 });
+    const c = size / 2 + offset;
+    const r = (size / 4) * scale;
+    for (let y = 0; y < size; y += 1) {
+      for (let x = 0; x < size; x += 1) {
+        const inside =
+          kind === "square" ? Math.abs(x - c) < r && Math.abs(y - c) < r
+            : kind === "disc" ? Math.hypot(x - c, y - c) < r
+              : Math.hypot(x - c, y - c) < r && !(x > c && y < c);
+        // A dark stripe gives the shape internal structure for SSIM.
+        if (inside) img.data.set(Math.abs(y - c) < r / 6 ? [20, 20, 20, 255] : [...color, 255], (y * size + x) * 4);
+      }
+    }
+    return img;
+  }
+
+  it("scores a moved, scaled copy as a near-copy", () => {
+    const s = referenceSimilarity(shape(128, "notched", [200, 30, 40], 10, 0.8), shape(128, "notched", [200, 30, 40]));
+    expect(s.silhouetteIoU).toBeGreaterThan(0.95);
+    expect(s.structure).toBeGreaterThan(0.9);
+    expect(s.nearCopy).toBe(true);
+  });
+
+  it("does not flag a different shape", () => {
+    const s = referenceSimilarity(shape(128, "square", [200, 30, 40]), shape(128, "notched", [200, 30, 40]));
+    expect(s.silhouetteIoU).toBeLessThan(0.85);
+    expect(s.nearCopy).toBe(false);
+  });
+
+  it("does not flag the same silhouette drawn with different internal structure", () => {
+    const plain = shape(128, "disc", [200, 30, 40]);
+    for (let i = 0; i < plain.data.length; i += 4) if (plain.data[i + 3]) plain.data.set([60, 140, 220], i);
+    const s = referenceSimilarity(plain, shape(128, "disc", [200, 30, 40]));
+    expect(s.silhouetteIoU).toBeGreaterThan(0.95);
+    expect(s.nearCopy).toBe(false);
+  });
+
+  it("finds the subject of an opaque image by its difference from the border colour", () => {
+    const opaque = compositeOver(shape(128, "notched", [200, 30, 40]), { r: 255, g: 255, b: 255 });
+    expect(referenceSimilarity(opaque, shape(128, "notched", [200, 30, 40])).silhouetteIoU).toBeGreaterThan(0.95);
+  });
+});
+
+describe("matte refinement and residue", () => {
+  const grey = { r: 242, g: 242, b: 242 };
+  const red = { r: 200, g: 30, b: 40 };
+
+  /** Opaque red disc of radius r, matted from a grey backdrop, optionally with a ring of another colour. */
+  function mattedDisc(size: number, r: number, ring?: { width: number; color: { r: number; g: number; b: number } }): RgbaImage {
+    const img = createImage(size, size, { ...grey, a: 0 });
+    for (let y = 0; y < size; y += 1) {
+      for (let x = 0; x < size; x += 1) {
+        const d = Math.hypot(x + 0.5 - size / 2, y + 0.5 - size / 2);
+        const i = (y * size + x) * 4;
+        if (d < r) img.data.set([red.r, red.g, red.b, 255], i);
+        else if (ring && d < r + ring.width) img.data.set([ring.color.r, ring.color.g, ring.color.b, 255], i);
+      }
+    }
+    return img;
+  }
+
+  it("takes the backdrop's colour back out of partly transparent edge pixels", () => {
+    const img = createImage(2, 1, { r: 0, g: 0, b: 0, a: 0 });
+    // Half-covered pixel: 0.5 × red + 0.5 × grey, as the matting model leaves it.
+    img.data.set([221, 136, 141, 128], 0);
+    img.data.set([10, 10, 10, 4], 4); // near-invisible speck
+    const out = decontaminateMatte(img, grey);
+    const [r, g, b, a] = px(out, 0, 0);
+    expect(Math.abs(r! - red.r)).toBeLessThanOrEqual(2);
+    expect(Math.abs(g! - red.g)).toBeLessThanOrEqual(2);
+    expect(Math.abs(b! - red.b)).toBeLessThanOrEqual(2);
+    expect(a).toBe(128);
+    expect(px(out, 1, 0)[3]).toBe(0);
+  });
+
+  it("reports a clean matte as clean", () => {
+    expect(matteResidue(mattedDisc(64, 20), grey)).toEqual({ fringe: 0, backdropTinted: 0, haze: 0 });
+  });
+
+  it("flags a backdrop-coloured fringe around the subject", () => {
+    const r = matteResidue(mattedDisc(64, 20, { width: 2, color: { r: 236, g: 236, b: 236 } }), grey);
+    expect(r.fringe).toBeGreaterThan(0.5);
+    expect(r.backdropTinted).toBeGreaterThan(0.05);
+  });
+
+  it("does not count subject colours far from the backdrop as fringe", () => {
+    const r = matteResidue(mattedDisc(64, 20, { width: 2, color: { r: 20, g: 20, b: 120 } }), grey);
+    expect(r.fringe).toBe(0);
+    expect(r.backdropTinted).toBe(0);
+  });
+
+  it("measures haze as the share of visible pixels that are only partly opaque", () => {
+    const img = mattedDisc(64, 20);
+    for (let i = 3; i < img.data.length; i += 4) if (img.data[i] === 0) img.data[i] = 60;
+    expect(matteResidue(img, grey).haze).toBeGreaterThan(0.5);
   });
 });

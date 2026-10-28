@@ -12,6 +12,8 @@ import { ComfyAgentError, ComfyTimeoutError, GraphEditError } from "./errors.js"
 import { applyEdit, describeDoc, parseGraphEdit, type GraphEdit } from "./edits.js";
 import { familySpec } from "./families.js";
 import {
+  REFERENCE_FAMILIES,
+  addBackgroundRemoval,
   availableBaseGraphs,
   buildTxt2Img,
   chooseEditModel,
@@ -25,19 +27,27 @@ import {
   type ModelFamily,
 } from "./graphs.js";
 import {
+  NEAR_COPY_MIN_IOU,
+  NEAR_COPY_MIN_STRUCTURE,
   alphaStats,
   chromaKey,
+  compositeOver,
+  contactSheet,
   coverToSize,
   cutoutSheet,
   decodePng,
+  decontaminateMatte,
   encodePng,
   estimateKeyColor,
   fitWithin,
   keyResidue,
+  matteResidue,
   parseHexColor,
   rectMask,
+  referenceSimilarity,
   toHexColor,
   type NormalizedRect,
+  type ReferenceSimilarity,
   type RgbaImage,
 } from "./image.js";
 import {
@@ -54,7 +64,10 @@ import {
   CRITIC_TOOL,
   KEY_COLORS,
   KEY_NEGATIVE,
+  MATTE_BACKDROPS,
+  backdropName,
   composeKeyedPrompt,
+  referenceSteering,
   type PromptStyle,
   normalizeCriticItems,
   stripKeyedPrompt,
@@ -65,6 +78,7 @@ import {
   REPAIR_SYSTEM,
   REPAIR_TOOL,
 } from "./prompts.js";
+import type { ReferenceAsset, ReferenceCandidate, ReferenceLibrary } from "./references.js";
 import type { ApiWorkflow, ObjectInfo } from "./types.js";
 import { assertValidGraph } from "./validate.js";
 
@@ -83,6 +97,43 @@ export type AssetRequest = {
    */
   checkpoint?: string;
   seed?: number;
+  /**
+   * How a transparent asset is cut out. `auto` (default): a matting model
+   * (core RemoveBackground node) when the server has one, else chroma keying.
+   */
+  cutout?: CutoutMode;
+  /**
+   * What the asset is. `icon` turns on shape references (closest emoji and
+   * icon-font symbols) when the loop is given a reference library.
+   */
+  kind?: "icon";
+};
+
+/** An image already accepted for the same set, used as a style reference. */
+export type SetReference = { id: string; png: Buffer; label?: string };
+
+/** Finds and renders shape references; {@link ReferenceLibrary} implements it. */
+export type ReferenceProvider = Pick<ReferenceLibrary, "search" | "load"> & { indexDigests?: Record<string, string> };
+
+export type ReferenceOptions = {
+  /** Shape and concept references for `kind: "icon"` requests. */
+  library?: ReferenceProvider;
+  /** Accepted images from the same set (for example the project's earlier icons), most relevant first. */
+  set?: SetReference[];
+  /** Most shape references per asset (default 1). */
+  maxShape?: number;
+  /** Most set references per asset (default 3). Every reference costs memory on the GPU. */
+  maxSet?: number;
+};
+
+export type CutoutMode = "auto" | "matte" | "chroma-key";
+export type CutoutMethod = "matte" | "chroma-key";
+
+/** How a round's transparent asset was cut out, and the backdrop it was rendered on. */
+export type CutoutInfo = {
+  method: CutoutMethod;
+  /** Requested backdrop or key colour, the colour measured on the image border, and the share of border pixels near it. */
+  backdrop: { requested: string; measured: string; borderMatch: number };
 };
 
 export type AssetLimits = {
@@ -120,6 +171,8 @@ export type AssetLoopOptions = {
   baseGraph?: ApiWorkflow;
   /** Deadline per ComfyUI run. */
   runTimeoutMs?: number;
+  /** Reference images (FLUX.2 [klein] only; ignored, with a note in the trace, for other models). */
+  references?: ReferenceOptions;
   onProgress?: (message: string) => void;
   signal?: AbortSignal;
 };
@@ -147,7 +200,11 @@ export type RoundTrace = {
   graph: ApiWorkflow;
   settings: Record<string, unknown>;
   generation?: { promptId: string; width: number; height: number; via: string };
+  /** Chroma keying only (kept for older trace readers); `cutout` covers both methods. */
   keyColor?: { requested: string; measured: string; borderMatch: number };
+  cutout?: CutoutInfo;
+  /** How closely the output matches each reference in use (near-copy guard). */
+  referenceSimilarity?: ({ id: string } & ReferenceSimilarity)[];
   rawImagePath?: string;
   imagePath?: string;
   checks: CheckResult[];
@@ -186,6 +243,8 @@ export type AssetTrace = {
     generationSize: { width: number; height: number };
     /** Model that runs `edit_previous`, when one is installed. */
     editModel?: { family: string; model: string };
+    /** Transparent assets only: how the subject is cut out. */
+    cutout?: { method: CutoutMethod; model?: string };
   };
   plan: {
     checklist: ChecklistItem[];
@@ -194,6 +253,17 @@ export type AssetTrace = {
     keyColor?: string;
     notes?: string;
     call?: LlmCallTrace;
+  };
+  /** Reference images offered and used, and where each came from. */
+  references?: {
+    candidates: { id: string; label: string; score: number; source?: string }[];
+    shape: { id: string; label: string; source: string; url?: string; why?: string }[];
+    set: { id: string; label?: string }[];
+    /** Why references were not used, or why none was chosen. */
+    note?: string;
+    /** References a repair stopped using, and in which round. */
+    dropped?: { id: string; round: number }[];
+    indexDigests?: Record<string, string>;
   };
   rounds: RoundTrace[];
   best: { round: number; score: RoundTrace["score"]; imagePath?: string } | null;
@@ -229,9 +299,12 @@ type PlannerEdit =
   | { op: "img2img_from_previous"; denoise: number }
   | { op: "inpaint_previous"; rect: NormalizedRect; denoise: number }
   | { op: "edit_previous"; instruction: string }
-  | { op: "set_key_color"; hex: string };
+  | { op: "set_key_color"; hex: string }
+  | { op: "drop_reference"; id: string };
 
 type PlanOutput = {
+  references?: { id?: unknown; why?: unknown }[];
+  reference_note?: string;
   checklist: ChecklistItem[];
   positive_prompt: string;
   negative_prompt: string;
@@ -246,6 +319,7 @@ type PlanOutput = {
 export async function generateAsset(request: AssetRequest, options: AssetLoopOptions): Promise<AssetResult> {
   validateRequest(request);
   const startedAt = Date.now();
+  const traceId = randomUUID();
   const limits = resolveLimits(options.limits ?? {});
   // Resolve both models before touching ComfyUI, so a bad model id fails fast.
   const [plannerModel, criticModel] = await Promise.all([
@@ -274,15 +348,76 @@ export async function generateAsset(request: AssetRequest, options: AssetLoopOpt
   const editModel = chooseEditModel(info);
   const gen = planGenerationSize(family, request.width, request.height);
   const seed = request.seed ?? randomInt(0, 2 ** 32 - 1);
-  log(`model ${choice?.label ?? checkpoint ?? "custom graph"} (${family})${editModel ? `; edits with ${editModel.label}` : ""}`);
+  const cutout = request.transparent ? chooseCutout(request.cutout ?? "auto", caps.backgroundRemoval?.model) : undefined;
+  const backdrops = cutout?.method === "matte" ? MATTE_BACKDROPS : KEY_COLORS;
+  log(
+    `model ${choice?.label ?? checkpoint ?? "custom graph"} (${family})${editModel ? `; edits with ${editModel.label}` : ""}` +
+      (cutout ? `; cut-out by ${cutout.method === "matte" ? `matting (${cutout.model})` : "chroma keying"}` : ""),
+  );
+
+  // 0. References: shape candidates for icons, and the set's accepted images.
+  const refOpts = options.references ?? {};
+  const refTrace: NonNullable<AssetTrace["references"]> = { candidates: [], shape: [], set: [] };
+  const wantShape = request.kind === "icon" && !!refOpts.library;
+  let setRefs: { id: string; label?: string; image: RgbaImage }[] = [];
+  let candidates: { candidate: ReferenceCandidate; asset: ReferenceAsset; image: RgbaImage }[] = [];
+  const referencesSupported = !options.baseGraph && REFERENCE_FAMILIES.includes(family);
+  if ((wantShape || refOpts.set?.length) && !referencesSupported) {
+    refTrace.note = `${options.baseGraph ? "a custom base graph" : spec?.label ?? family} cannot take reference images; generated without them`;
+  }
+  if (referencesSupported) {
+    setRefs = (refOpts.set ?? []).slice(0, refOpts.maxSet ?? 3).flatMap((s) => {
+      try {
+        return [{ id: s.id, ...(s.label ? { label: s.label } : {}), image: decodePng(s.png) }];
+      } catch {
+        return [];
+      }
+    });
+    refTrace.set = setRefs.map((s) => ({ id: s.id, ...(s.label ? { label: s.label } : {}) }));
+    if (wantShape) {
+      try {
+        log("finding shape references");
+        const found = await refOpts.library!.search(request.prompt, 4);
+        for (const candidate of found) {
+          const asset = await refOpts.library!.load(candidate.id, 512).catch(() => undefined);
+          if (asset) candidates.push({ candidate, asset, image: decodePng(asset.png) });
+        }
+        refTrace.candidates = candidates.map(({ candidate, asset }) => ({ id: candidate.id, label: candidate.label, score: Number(candidate.score.toFixed(2)), source: asset.source }));
+        if (refOpts.library!.indexDigests && Object.keys(refOpts.library!.indexDigests).length) refTrace.indexDigests = { ...refOpts.library!.indexDigests };
+        if (candidates.length === 0) refTrace.note = "no emoji or icon matched the request";
+      } catch (err) {
+        candidates = [];
+        refTrace.note = `reference search failed: ${errorInfo(err).message}`;
+      }
+    }
+  }
+  const maxShape = refOpts.maxShape ?? 1;
 
   // 1. Plan.
   log(`planning with ${plannerModel}`);
+  const planContent: ContentPart[] = [{ type: "text", text: planUserText(request, caps, family, gen, choice, editModel, cutout?.method) }];
+  if (candidates.length) {
+    planContent.push(
+      { type: "image", mime: "image/png", base64: encodePng(contactSheet(candidates.map((c) => c.image), 192)).toString("base64") },
+      {
+        type: "text",
+        text:
+          `Reference candidates, numbered left to right in the sheet above (pick at most ${maxShape}, or none):\n` +
+          candidates.map((c, i) => `${i + 1}. ${c.candidate.id} ${c.candidate.label} (${c.asset.source})`).join("\n"),
+      },
+    );
+  }
+  if (setRefs.length) {
+    planContent.push(
+      { type: "image", mime: "image/png", base64: encodePng(contactSheet(setRefs.map((s) => s.image), 192)).toString("base64") },
+      { type: "text", text: `Icons already made for the same set (above): ${setRefs.map((s) => s.label ?? s.id).join(", ")}. This icon must match their style.` },
+    );
+  }
   const planCall = await options.llm.structured<PlanOutput>(
     {
       model: plannerModel,
       system: PLANNER_SYSTEM,
-      content: [{ type: "text", text: planUserText(request, caps, family, gen, choice, editModel) }],
+      content: planContent,
       schema: PLAN_SCHEMA,
       toolName: PLAN_TOOL,
       maxTokens: 8192,
@@ -290,11 +425,43 @@ export async function generateAsset(request: AssetRequest, options: AssetLoopOpt
     },
     plannerShape,
   );
-  const plan = normalizePlan(planCall.data, request);
-  let keyColor = request.transparent ? plan.key_color ?? "#00FF00" : undefined;
+  const plan = normalizePlan(planCall.data, request, backdrops);
+  if (setRefs.length && !plan.checklist.some((c) => c.id === SET_CONSISTENCY_ITEM.id)) plan.checklist.push(SET_CONSISTENCY_ITEM);
+  let shapeRefs: { id: string; image: RgbaImage }[] = [];
+  for (const pick of Array.isArray(planCall.data.references) ? planCall.data.references : []) {
+    const found = candidates.find((c) => c.candidate.id === pick?.id);
+    if (!found || shapeRefs.some((s) => s.id === found.candidate.id) || shapeRefs.length >= maxShape) continue;
+    shapeRefs.push({ id: found.candidate.id, image: found.image });
+    refTrace.shape.push({
+      id: found.candidate.id,
+      label: found.asset.label,
+      source: found.asset.source,
+      ...(found.asset.url ? { url: found.asset.url } : {}),
+      ...(typeof pick.why === "string" && pick.why ? { why: pick.why } : {}),
+    });
+  }
+  if (candidates.length && shapeRefs.length === 0) refTrace.note = typeof planCall.data.reference_note === "string" && planCall.data.reference_note ? planCall.data.reference_note : "the planner chose no reference";
+  let keyColor = request.transparent ? plan.key_color ?? Object.keys(backdrops)[0]! : undefined;
   let subjectPrompt = plan.positive_prompt;
   let subjectNegative = plan.negative_prompt;
-  const composePositive = () => composeKeyedPrompt(subjectPrompt, keyColor, promptStyle);
+  const steering = () => referenceSteering(shapeRefs.length, setRefs.length);
+  const composePositive = () => {
+    const s = steering();
+    const subjectText = s ? `${subjectPrompt.replace(/\s+$/, "").replace(/([^.!?])$/, "$1.")} ${s}` : subjectPrompt;
+    return composeKeyedPrompt(subjectText, keyColor, promptStyle);
+  };
+  // Reference images go to the server on the backdrop the asset is rendered
+  // on (white for opaque assets); re-sent when the backdrop or the set changes.
+  let referenceNames: string[] = [];
+  const uploadReferences = async () => {
+    const bg = parseHexColor(keyColor ?? "#FFFFFF");
+    const all = [...shapeRefs, ...setRefs];
+    referenceNames = [];
+    for (const [n, r] of all.entries()) {
+      const up = await options.comfy.uploadImage(encodePng(compositeOver(r.image, bg)), `comfy-agent-${traceId.slice(0, 8)}-ref${n + 1}-${(keyColor ?? "#FFFFFF").slice(1)}.png`);
+      referenceNames.push(up.name);
+    }
+  };
   const composeNegative = () => (keyColor ? `${subjectNegative}, ${KEY_NEGATIVE}` : subjectNegative);
 
   const sampling = defaultSampling(family, info);
@@ -320,8 +487,10 @@ export async function generateAsset(request: AssetRequest, options: AssetLoopOpt
       filenamePrefix: "comfy-agent/asset",
       ...sampling,
       seed: seedValue,
+      ...(referenceNames.length ? { references: referenceNames } : {}),
     });
 
+  if (shapeRefs.length || setRefs.length) await uploadReferences();
   let doc: GraphDoc;
   if (options.baseGraph) {
     doc = docFromGraph(structuredClone(options.baseGraph));
@@ -340,7 +509,7 @@ export async function generateAsset(request: AssetRequest, options: AssetLoopOpt
   };
 
   const trace: AssetTrace = {
-    id: randomUUID(),
+    id: traceId,
     version: 1,
     startedAt: new Date(startedAt).toISOString(),
     finishedAt: "",
@@ -353,6 +522,7 @@ export async function generateAsset(request: AssetRequest, options: AssetLoopOpt
       family: doc.family,
       generationSize: { width: gen.width, height: gen.height },
       ...(editModel ? { editModel: { family: editModel.family, model: editModel.model } } : {}),
+      ...(cutout ? { cutout } : {}),
     },
     plan: {
       checklist: plan.checklist,
@@ -362,6 +532,7 @@ export async function generateAsset(request: AssetRequest, options: AssetLoopOpt
       ...(plan.notes ? { notes: plan.notes } : {}),
       call: callTrace("planner", planCall),
     },
+    ...(wantShape || refOpts.set?.length ? { references: refTrace } : {}),
     rounds: [],
     best: null,
     stopReason: "max-rounds",
@@ -369,7 +540,9 @@ export async function generateAsset(request: AssetRequest, options: AssetLoopOpt
   };
   addUsage(trace, planCall);
 
-  let best: { round: number; png: Buffer; graph: ApiWorkflow; score: RoundTrace["score"]; imagePath?: string } | null = null;
+  let best: { round: number; png: Buffer; graph: ApiWorkflow; score: RoundTrace["score"]; imagePath?: string; copied: boolean } | null = null;
+  // The set's icons, shown to the critic for the set_consistency item.
+  const setSheet = setRefs.length ? encodePng(contactSheet(setRefs.map((s) => s.image), 256)).toString("base64") : undefined;
   let previousRaw: Buffer | null = null;
   const seenGraphs = new Set<string>();
 
@@ -406,12 +579,14 @@ export async function generateAsset(request: AssetRequest, options: AssetLoopOpt
     seenGraphs.add(graphKey);
 
     const roundStart = Date.now();
+    // A matting cut-out runs in the same prompt: the saved image carries the matte as alpha.
+    const queuedGraph = cutout?.method === "matte" ? addBackgroundRemoval(doc.graph, cutout.model!) : doc.graph;
     const rt: RoundTrace = {
       round,
       startedAt: new Date(roundStart).toISOString(),
       durationMs: 0,
       timing: { comfyMs: 0, queueWaitMs: 0, postProcessMs: 0, criticMs: 0, plannerMs: 0 },
-      graph: structuredClone(doc.graph),
+      graph: structuredClone(queuedGraph),
       settings: describeDoc(doc),
       checks: [],
       score: { passed: 0, total: 0, ratio: 0 },
@@ -421,10 +596,11 @@ export async function generateAsset(request: AssetRequest, options: AssetLoopOpt
 
     // 2. Run.
     let rawPng: Buffer;
+    let matted: RgbaImage | undefined;
     try {
-      assertValidGraph(doc.graph, info);
+      assertValidGraph(queuedGraph, info);
       const t = Date.now();
-      const run = await options.comfy.run(doc.graph, {
+      const run = await options.comfy.run(queuedGraph, {
         validate: false,
         ...(options.runTimeoutMs ? { timeoutMs: options.runTimeoutMs } : {}),
         // The prompt may wait in the queue only until the wall-clock ceiling.
@@ -441,6 +617,12 @@ export async function generateAsset(request: AssetRequest, options: AssetLoopOpt
       const image = run.images.at(-1)!;
       rawPng = image.bytes;
       const raw = decodePng(rawPng);
+      if (cutout?.method === "matte") {
+        // Keep the cut-out for post-processing; the round's raw image (used for
+        // edits and img2img) is the opaque render underneath it.
+        matted = raw;
+        rawPng = encodePng(opaque(raw));
+      }
       rt.generation = { promptId: run.promptId, width: raw.width, height: raw.height, via: run.via };
     } catch (err) {
       rt.error = errorInfo(err);
@@ -461,13 +643,27 @@ export async function generateAsset(request: AssetRequest, options: AssetLoopOpt
 
     // 3. Post-process in code and run deterministic checks.
     const tp = Date.now();
-    const post = postProcess(decodePng(rawPng), request, keyColor);
+    const post = postProcess(decodePng(rawPng), request, keyColor, matted ? { matted } : {});
     const finalPng = encodePng(post.image);
     const finalPath = path.join(options.workDir, `round-${round}.png`);
     await writeFile(finalPath, finalPng);
     rt.imagePath = recordPath(finalPath);
     if (post.key) rt.keyColor = post.key;
-    rt.checks = deterministicChecks(post.image, request, post.key);
+    if (post.cutout) rt.cutout = post.cutout;
+    rt.checks = deterministicChecks(post.image, request, post.key, post.cutout);
+    const inUse = [...shapeRefs, ...setRefs];
+    if (inUse.length && doc.kind !== "edit") {
+      // Near-copy guard: a reference supplies shape, concept or style, never the drawing itself.
+      rt.referenceSimilarity = inUse.map((r) => ({ id: r.id, ...referenceSimilarity(post.image, r.image) }));
+      const copies = rt.referenceSimilarity.filter((s) => s.nearCopy);
+      rt.checks.push({
+        id: "reference_copy",
+        pass: copies.length === 0,
+        detail: copies.length
+          ? `the output reproduces ${copies.map((c) => `${c.id} (silhouette ${c.silhouetteIoU.toFixed(2)}, structure ${c.structure.toFixed(2)})`).join(", ")}; it must be a new drawing`
+          : `no near-copy of ${inUse.length} reference(s) (limits: silhouette ≥ ${NEAR_COPY_MIN_IOU} and structure ≥ ${NEAR_COPY_MIN_STRUCTURE})`,
+      });
+    }
     rt.timing.postProcessMs = Date.now() - tp;
 
     // 4. Critic.
@@ -482,7 +678,8 @@ export async function generateAsset(request: AssetRequest, options: AssetLoopOpt
             system: CRITIC_SYSTEM,
             content: [
               { type: "image", mime: "image/png", base64: criticView.toString("base64") },
-              { type: "text", text: criticUserText(plan.checklist, request) + reminder },
+              ...(setSheet ? [{ type: "image" as const, mime: "image/png", base64: setSheet }] : []),
+              { type: "text", text: criticUserText(plan.checklist, request, setRefs.length) + reminder },
             ],
             schema: CRITIC_SCHEMA,
             toolName: CRITIC_TOOL,
@@ -521,8 +718,10 @@ export async function generateAsset(request: AssetRequest, options: AssetLoopOpt
     const passed = rt.checks.filter((c) => c.pass).length + rt.critic.items.filter((c) => c.pass).length;
     const total = rt.checks.length + rt.critic.items.length;
     rt.score = { passed, total, ratio: total ? passed / total : 0 };
-    if (!best || rt.score.ratio > best.score.ratio) {
-      best = { round, png: finalPng, graph: structuredClone(doc.graph), score: rt.score, imagePath: rt.imagePath };
+    // A near-copy of a reference is never preferred over an original drawing, whatever its score.
+    const copied = rt.checks.some((c) => c.id === "reference_copy" && !c.pass);
+    if (!best || (best.copied && !copied) || (best.copied === copied && rt.score.ratio > best.score.ratio)) {
+      best = { round, png: finalPng, graph: structuredClone(queuedGraph), score: rt.score, imagePath: rt.imagePath, copied };
     }
     const allPass = !rt.critic.error && passed === total;
     if (allPass) {
@@ -553,7 +752,14 @@ export async function generateAsset(request: AssetRequest, options: AssetLoopOpt
           system: REPAIR_SYSTEM,
           content: [
             { type: "image", mime: "image/png", base64: criticView.toString("base64") },
-            { type: "text", text: repairUserText(request, plan.checklist, doc, rt, caps, trace.rounds, keyColor) },
+            {
+              type: "text",
+              text:
+                repairUserText(request, plan.checklist, doc, rt, caps, trace.rounds, keyColor, cutout?.method, backdrops) +
+                ([...shapeRefs, ...setRefs].length
+                  ? `\nReferences in use (drop_reference takes these ids): ${[...shapeRefs.map((r) => `${r.id} (shape)`), ...setRefs.map((r) => `${r.id} (set)`)].join(", ")}.`
+                  : ""),
+            },
           ],
           schema: REPAIR_SCHEMA,
           toolName: REPAIR_TOOL,
@@ -590,15 +796,37 @@ export async function generateAsset(request: AssetRequest, options: AssetLoopOpt
             break;
           case "set_key_color":
             if (!request.transparent) throw new GraphEditError(edit.op, "the request does not need transparency");
+            if (!backdrops[edit.hex]) {
+              throw new GraphEditError(edit.op, `with ${cutout?.method === "matte" ? "matting" : "chroma keying"}, hex must be one of ${Object.keys(backdrops).join(", ")}`);
+            }
             keyColor = edit.hex;
-            doc = reprompt();
+            if (referenceNames.length) {
+              // The references are sent on the backdrop: send them again on the new one.
+              await uploadReferences();
+              doc = buildBase(Number(describeDoc(doc).seed ?? seed));
+            } else {
+              doc = reprompt();
+            }
             break;
+          case "drop_reference": {
+            const before = shapeRefs.length + setRefs.length;
+            shapeRefs = shapeRefs.filter((r) => r.id !== edit.id);
+            setRefs = setRefs.filter((r) => r.id !== edit.id);
+            if (shapeRefs.length + setRefs.length === before) {
+              throw new GraphEditError(edit.op, `no reference "${edit.id}" is in use (in use: ${[...shapeRefs, ...setRefs].map((r) => r.id).join(", ") || "none"})`);
+            }
+            if (setRefs.length === 0) plan.checklist = plan.checklist.filter((c) => c.id !== SET_CONSISTENCY_ITEM.id);
+            refTrace.dropped = [...(refTrace.dropped ?? []), { id: edit.id, round }];
+            await uploadReferences();
+            doc = buildBase(Number(describeDoc(doc).seed ?? seed));
+            break;
+          }
           case "edit_previous": {
             if (!previousRaw) throw new GraphEditError(edit.op, "no previous image");
             if (!editModel) throw new GraphEditError(edit.op, "no instruction-editing model is installed; use img2img_from_previous or inpaint_previous");
             const up = await options.comfy.uploadImage(previousRaw, `comfy-agent-${trace.id.slice(0, 8)}-r${round}-edit.png`);
             const instruction = keyColor
-              ? `${edit.instruction.replace(/\s+$/, "").replace(/([^.!?])$/, "$1.")} Keep the plain flat ${KEY_COLORS[keyColor] ?? "key-colour"} background unchanged.`
+              ? `${edit.instruction.replace(/\s+$/, "").replace(/([^.!?])$/, "$1.")} Keep the plain flat ${backdropName(keyColor) ?? "key-colour"} background unchanged.`
               : edit.instruction;
             doc = applyEdit(doc, { op: "edit_with_instruction", image: up.name, instruction }, info);
             break;
@@ -655,18 +883,34 @@ function stripUndefined<T extends object>(o: T): Partial<T> {
   return Object.fromEntries(Object.entries(o).filter(([, v]) => v !== undefined)) as Partial<T>;
 }
 
+/**
+ * Turn a round's render into the asset: crop/resize to the requested size and,
+ * for a transparent asset, cut the subject out. With `matted` (the server's
+ * matting output: the render's RGB with the matte as alpha) the backdrop's
+ * colour is taken back out of soft edges; otherwise the opaque `raw` render
+ * is chroma keyed on `keyColor`.
+ */
 export function postProcess(
   raw: RgbaImage,
   request: AssetRequest,
   keyColor: string | undefined,
-): { image: RgbaImage; key?: { requested: string; measured: string; borderMatch: number } } {
+  options: { matted?: RgbaImage } = {},
+): { image: RgbaImage; key?: { requested: string; measured: string; borderMatch: number }; cutout?: CutoutInfo } {
   if (request.transparent && keyColor) {
     const nominal = parseHexColor(keyColor);
     const est = estimateKeyColor(raw, nominal);
+    const backdrop = { requested: keyColor, measured: toHexColor(est.color), borderMatch: Number(est.borderMatch.toFixed(3)) };
+    if (options.matted) {
+      return {
+        image: coverToSize(decontaminateMatte(options.matted, est.color), request.width, request.height),
+        cutout: { method: "matte", backdrop },
+      };
+    }
     const keyed = chromaKey(raw, est.color, { tolerance: 0.1, softness: 0.1, connectedOnly: true, featherPx: 1, despill: true });
     return {
       image: coverToSize(keyed, request.width, request.height),
-      key: { requested: keyColor, measured: toHexColor(est.color), borderMatch: Number(est.borderMatch.toFixed(3)) },
+      key: backdrop,
+      cutout: { method: "chroma-key", backdrop },
     };
   }
   return { image: coverToSize(raw, request.width, request.height) };
@@ -679,10 +923,19 @@ export function postProcess(
 const KEY_RESIDUE_MAX_TINTED = 0.01;
 const KEY_RESIDUE_MAX_HAZE = 0.08;
 
+// A clean matte has no backdrop-coloured ring on its edge, almost no
+// backdrop-coloured pixels anywhere, and no translucent area away from the
+// edge. Set on 106 real BiRefNet mattes of eval rounds; the 5 that fail were
+// each checked by eye (evals/design-assets/MATTE_CALIBRATION.md).
+export const MATTE_RESIDUE_MAX_FRINGE = 0.1;
+export const MATTE_RESIDUE_MAX_TINTED = 0.02;
+export const MATTE_RESIDUE_MAX_HAZE = 0.05;
+
 export function deterministicChecks(
   img: RgbaImage,
   request: AssetRequest,
   key?: { requested: string; measured: string; borderMatch: number },
+  cutout?: CutoutInfo,
 ): CheckResult[] {
   const checks: CheckResult[] = [
     {
@@ -698,7 +951,18 @@ export function deterministicChecks(
       pass: a.transparent >= 0.05 && a.borderTransparent >= 0.6,
       detail: `transparent ${(a.transparent * 100).toFixed(1)}%, border transparent ${(a.borderTransparent * 100).toFixed(1)}%`,
     });
-    if (key) {
+    if (cutout?.method === "matte") {
+      const residue = matteResidue(img, parseHexColor(cutout.backdrop.measured));
+      checks.push({
+        id: "matte_residue",
+        pass: residue.fringe <= MATTE_RESIDUE_MAX_FRINGE && residue.backdropTinted <= MATTE_RESIDUE_MAX_TINTED && residue.haze <= MATTE_RESIDUE_MAX_HAZE,
+        detail:
+          `${(residue.fringe * 100).toFixed(1)}% of edge pixels near the ${cutout.backdrop.requested} backdrop (max ${MATTE_RESIDUE_MAX_FRINGE * 100}%), ` +
+          `${(residue.backdropTinted * 100).toFixed(1)}% of visible pixels near it (max ${MATTE_RESIDUE_MAX_TINTED * 100}%), ` +
+          `${(residue.haze * 100).toFixed(1)}% partly transparent (max ${MATTE_RESIDUE_MAX_HAZE * 100}%); ` +
+          "high values mean a halo, leftover background, shadow or haze around the subject",
+      });
+    } else if (key) {
       checks.push({
         id: "flat_background",
         pass: key.borderMatch >= 0.6,
@@ -718,7 +982,29 @@ export function deterministicChecks(
   return checks;
 }
 
-function normalizePlan(raw: PlanOutput, request: AssetRequest): PlanOutput {
+/** Checklist item the loop adds when icons from the same set are used as style references. */
+export const SET_CONSISTENCY_ITEM: ChecklistItem = {
+  id: "set_consistency",
+  text: "The icon matches the style of the icons already made for the same set (rendering, palette, outline weight, lighting, level of detail) while showing its own subject",
+};
+
+function chooseCutout(mode: CutoutMode, matteModel: string | undefined): { method: CutoutMethod; model?: string } {
+  if (mode === "chroma-key") return { method: "chroma-key" };
+  if (matteModel) return { method: "matte", model: matteModel };
+  if (mode === "matte") {
+    throw new ComfyAgentError("GRAPH_EDIT", "cutout \"matte\" needs a background-removal model in models/background_removal and the core RemoveBackground node");
+  }
+  return { method: "chroma-key" };
+}
+
+/** The same pixels with every pixel fully opaque (the render under a matting cut-out). */
+function opaque(img: RgbaImage): RgbaImage {
+  const data = new Uint8Array(img.data);
+  for (let i = 3; i < data.length; i += 4) data[i] = 255;
+  return { width: img.width, height: img.height, data };
+}
+
+function normalizePlan(raw: PlanOutput, request: AssetRequest, backdrops: Record<string, string>): PlanOutput {
   const items = Array.isArray(raw.checklist) ? raw.checklist : [];
   const seen = new Set<string>();
   const checklist: ChecklistItem[] = [];
@@ -736,7 +1022,7 @@ function normalizePlan(raw: PlanOutput, request: AssetRequest): PlanOutput {
     checklist: checklist.slice(0, 8),
     positive_prompt: typeof raw.positive_prompt === "string" && raw.positive_prompt.trim() ? raw.positive_prompt.trim() : request.prompt,
     negative_prompt: [typeof raw.negative_prompt === "string" ? raw.negative_prompt.trim() : "", request.negative?.trim() ?? ""].filter(Boolean).join(", "),
-    ...(key && KEY_COLORS[key] ? { key_color: key } : { key_color: undefined }),
+    ...(key && backdrops[key] ? { key_color: key } : { key_color: undefined }),
   };
 }
 
@@ -767,9 +1053,14 @@ function parsePlannerEdit(raw: unknown): PlannerEdit {
     if (!(d > 0 && d <= 1)) throw new GraphEditError("inpaint_previous", "denoise must be in (0, 1]");
     return { op: "inpaint_previous", rect, denoise: d };
   }
+  if (r.op === "drop_reference") {
+    const id = typeof r.id === "string" ? r.id.trim() : typeof r.text === "string" ? r.text.trim() : "";
+    if (!id) throw new GraphEditError("drop_reference", "id must name a reference in use");
+    return { op: "drop_reference", id };
+  }
   if (r.op === "set_key_color") {
     const hex = String(r.hex ?? "").toUpperCase();
-    if (!KEY_COLORS[hex]) throw new GraphEditError("set_key_color", `hex must be one of ${Object.keys(KEY_COLORS).join(", ")}`);
+    if (!backdropName(hex)) throw new GraphEditError("set_key_color", `hex must be one of ${[...Object.keys(KEY_COLORS), ...Object.keys(MATTE_BACKDROPS)].join(", ")}`);
     return { op: "set_key_color", hex };
   }
   if (r.op === "set_seed" && (r.seed === undefined || r.seed === null || r.seed === "" || !Number.isFinite(Number(r.seed)))) {
@@ -828,29 +1119,38 @@ function planUserText(
   gen: { width: number; height: number },
   choice: ModelChoice | undefined,
   editModel: ModelChoice | undefined,
+  cutout: CutoutMethod | undefined,
 ): string {
   const spec = familySpec(family);
+  const backdrops = cutout === "matte" ? MATTE_BACKDROPS : KEY_COLORS;
   return [
     `Request: ${request.prompt}`,
     `Output size: ${request.width}x${request.height} px (generated at ${gen.width}x${gen.height}, then cropped/resized in code).`,
-    `Transparent background required: ${request.transparent ? "yes — choose key_color" : "no"}`,
+    !request.transparent
+      ? "Transparent background required: no"
+      : cutout === "matte"
+        ? "Transparent background required: yes. The subject is rendered on a plain backdrop and cut out with a matting model, which also keeps soft edges, steam and glow. Choose key_color (the backdrop) so it contrasts with the subject."
+        : "Transparent background required: yes. The subject is rendered on a flat key colour that is removed by chroma keying in code. Choose key_color far from every subject colour.",
+    request.transparent ? `Allowed key_color values: ${Object.entries(backdrops).map(([h, n]) => `${h} (${n})`).join(", ")}.` : "",
     request.style ? `Style and palette notes: ${request.style}` : "",
     request.negative ? `Must not contain: ${request.negative}` : "",
     spec
       ? `Model family: ${family} (${choice?.label ?? spec.label}, distilled, language-model text encoder). Write positive_prompt as plain sentences; steps, cfg, sampler and scheduler are fixed.`
       : `Model family: ${family}. Available samplers: ${caps.samplers.slice(0, 25).join(", ")}. Schedulers: ${caps.schedulers.join(", ")}.`,
     editModel ? `Instruction editing is available for repairs (${editModel.label}).` : "",
-    `Allowed key colours: ${Object.entries(KEY_COLORS).map(([h, n]) => `${h} (${n})`).join(", ")}.`,
     `Call ${PLAN_TOOL}.`,
   ].filter(Boolean).join("\n");
 }
 
-function criticUserText(checklist: ChecklistItem[], request: AssetRequest): string {
+function criticUserText(checklist: ChecklistItem[], request: AssetRequest, setCount = 0): string {
   return [
     `Original request: ${request.prompt}`,
     request.transparent
       ? "This is a cut-out asset, shown twice: on white (left) and on near-black (right). Those backgrounds are transparent. " +
         "A visible shadow, glow, tint, haze or coloured fringe around the subject on either side is a defect: fail any item it affects."
+      : "",
+    setCount
+      ? `The second image shows ${setCount} icon(s) already made for the same set. Grade ${SET_CONSISTENCY_ITEM.id} against them; grade every other item on the first image only.`
       : "",
     "Checklist:",
     ...checklist.map((c) => `- ${c.id}: ${c.text}`),
@@ -866,6 +1166,8 @@ function repairUserText(
   caps: ReturnType<typeof summarizeCapabilities>,
   rounds: RoundTrace[],
   keyColor: string | undefined,
+  cutout: CutoutMethod | undefined,
+  backdrops: Record<string, string>,
 ): string {
   const failing = rt.critic?.items.filter((i) => !i.pass) ?? [];
   const history = rounds.slice(0, -1).map((r) => ({
@@ -875,7 +1177,14 @@ function repairUserText(
     rejected: r.repair?.rejected.map((x) => x.error) ?? [],
   }));
   return [
-    `Request: ${request.prompt} (${request.width}x${request.height}${request.transparent ? `, transparent via key colour ${keyColor}` : ""})`,
+    `Request: ${request.prompt} (${request.width}x${request.height}${
+      request.transparent
+        ? cutout === "matte"
+          ? `, transparent: rendered on a ${keyColor} backdrop and cut out with a matting model`
+          : `, transparent via key colour ${keyColor}`
+        : ""
+    })`,
+    request.transparent ? `Allowed set_key_color values: ${Object.keys(backdrops).join(", ")}.` : "",
     request.style ? `Style notes: ${request.style}` : "",
     `Checklist: ${JSON.stringify(checklist)}`,
     `Current settings: ${JSON.stringify(describeDoc(doc))}`,

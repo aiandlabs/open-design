@@ -15,6 +15,7 @@ import { CRITIC_TOOL, normalizeCriticItems, PLAN_TOOL, REPAIR_TOOL } from "../sr
 import type { ApiWorkflow } from "../src/types.js";
 import { startFakeComfy, type FakeComfy, type FakeComfyOptions } from "./fixtures/fake-comfy.js";
 import { FAMILY_NODES } from "./fixtures/object-info-families.js";
+import { MATTING_NODES } from "./fixtures/object-info-matting.js";
 import { makeObjectInfo } from "./fixtures/object-info.js";
 
 const cleanups: (() => Promise<void>)[] = [];
@@ -189,6 +190,245 @@ describe("generateAsset", () => {
     const sent = fake.prompts[0]!.graph;
     expect(String(sent.pos!.inputs.text)).toContain("chroma-key green background");
     expect(String(sent.neg!.inputs.text)).toContain("gradient background");
+  });
+
+  describe("with a matting model installed", () => {
+    const mattingInfo = () => ({ ...makeObjectInfo(), ...structuredClone(MATTING_NODES) });
+    /** What ComfyUI saves after JoinImageWithAlpha: the render's RGB with the matte as alpha. */
+    const mattedDisc = (w: number, h: number) => {
+      const img = createImage(w, h, { r: 250, g: 250, b: 250, a: 0 });
+      for (let y = 0; y < h; y += 1) {
+        for (let x = 0; x < w; x += 1) if (Math.hypot(x - w / 2, y - h / 2) < w / 4) img.data.set([200, 30, 40, 255], (y * w + x) * 4);
+      }
+      return img;
+    };
+
+    it("renders on a plain backdrop and cuts the subject out with the matting model", async () => {
+      const { fake, comfy, workDir } = await setup({ objectInfo: mattingInfo(), render: () => encodePng(mattedDisc(768, 768)) });
+      const { llm, log } = stubLlm({
+        plan: { ...PLAN, checklist: [{ id: "subject", text: "One red disc" }], key_color: "#ffffff" },
+        critic: () => ({ items: [{ id: "subject", pass: true }] }),
+      });
+      const res = await generateAsset(
+        { prompt: "a red disc icon", width: 256, height: 256, transparent: true },
+        { comfy, llm, plannerModel: "test/planner", criticModel: "test/critic", workDir },
+      );
+      expect(res.trace.stopReason).toBe("all-pass");
+      expect(res.trace.server.cutout).toEqual({ method: "matte", model: "birefnet.safetensors" });
+      const r1 = res.trace.rounds[0]!;
+      expect(r1.checks.map((c) => [c.id, c.pass])).toEqual([
+        ["size", true],
+        ["alpha", true],
+        ["matte_residue", true],
+      ]);
+      expect(r1.cutout).toMatchObject({ method: "matte", backdrop: { requested: "#FFFFFF" } });
+      const sent = fake.prompts[0]!.graph;
+      expect(Object.values(sent).map((n) => n.class_type)).toEqual(expect.arrayContaining(["RemoveBackground", "InvertMask", "JoinImageWithAlpha"]));
+      expect(String(sent.pos!.inputs.text)).toMatch(/plain flat solid white background/);
+      // The planner is offered backdrops for matting, not chroma-key colours.
+      const planText = positiveOf(log.find((l) => l.tool === PLAN_TOOL)!.body);
+      expect(planText).toContain("matting model");
+      expect(planText).toContain("#808080");
+      expect(planText).not.toContain("chroma-key green");
+      // The round's raw image is the opaque render (for edits); the asset is the cut-out.
+      expect(alphaStats(decodePng(readFileSync(path.join(workDir, "round-1-raw.png")))).transparent).toBe(0);
+      const out = decodePng(res.png);
+      expect(out.data[3]).toBe(0);
+      expect(alphaStats(out).borderTransparent).toBe(1);
+    });
+
+    it("keys with a chroma colour instead when the request asks for it", async () => {
+      const { fake, comfy, workDir } = await setup({ objectInfo: mattingInfo(), render: () => encodePng(discOnGreen(768, 768)) });
+      const { llm } = stubLlm({
+        plan: { ...PLAN, checklist: [{ id: "subject", text: "One red disc" }], key_color: "#00ff00" },
+        critic: () => ({ items: [{ id: "subject", pass: true }] }),
+      });
+      const res = await generateAsset(
+        { prompt: "a red disc icon", width: 256, height: 256, transparent: true, cutout: "chroma-key" },
+        { comfy, llm, plannerModel: "test/planner", criticModel: "test/critic", workDir },
+      );
+      expect(res.trace.server.cutout).toEqual({ method: "chroma-key" });
+      expect(res.trace.rounds[0]!.checks.map((c) => c.id)).toEqual(["size", "alpha", "flat_background", "key_residue"]);
+      expect(Object.values(fake.prompts[0]!.graph).some((n) => n.class_type === "RemoveBackground")).toBe(false);
+    });
+
+    it("falls back to the default backdrop when the planner picks a chroma colour for a matte", async () => {
+      const { fake, comfy, workDir } = await setup({ objectInfo: mattingInfo(), render: () => encodePng(mattedDisc(768, 768)) });
+      const { llm } = stubLlm({
+        plan: { ...PLAN, checklist: [{ id: "subject", text: "One red disc" }], key_color: "#00ff00" },
+        critic: () => ({ items: [{ id: "subject", pass: true }] }),
+      });
+      const res = await generateAsset(
+        { prompt: "a red disc icon", width: 256, height: 256, transparent: true },
+        { comfy, llm, plannerModel: "test/planner", criticModel: "test/critic", workDir },
+      );
+      expect(res.trace.plan.keyColor).toBe("#FFFFFF");
+      expect(String(fake.prompts[0]!.graph.pos!.inputs.text)).not.toContain("green");
+    });
+  });
+
+  describe("icon references", () => {
+    const kleinInfo = () => ({ ...makeObjectInfo(), ...structuredClone(FAMILY_NODES), ...structuredClone(MATTING_NODES) });
+    /** A matted subject: a coloured disc, optionally with a notch, on a transparent canvas. */
+    const subject = (size: number, rgb: [number, number, number], notch = false) => {
+      const img = createImage(size, size, { r: 255, g: 255, b: 255, a: 0 });
+      for (let y = 0; y < size; y += 1) {
+        for (let x = 0; x < size; x += 1) {
+          const inside = Math.hypot(x - size / 2, y - size / 2) < size / 3 && !(notch && x > size / 2 && y < size / 2);
+          if (inside) img.data.set(Math.abs(y - size / 2) < size / 20 ? [20, 20, 20, 255] : [...rgb, 255], (y * size + x) * 4);
+        }
+      }
+      return img;
+    };
+    const CUP_REF = subject(512, [120, 70, 30], true);
+    function fakeLibrary() {
+      const loads: string[] = [];
+      return {
+        loads,
+        library: {
+          indexDigests: { emoji: "e".repeat(64) },
+          search: async () => [
+            { id: "emoji:2615", kind: "emoji" as const, label: "hot beverage", tags: ["coffee"], score: 4.5 },
+            { id: "icon:coffee", kind: "icon" as const, label: "coffee", tags: ["cup"], score: 3 },
+          ],
+          load: async (id: string, size = 512) => {
+            loads.push(`${id}@${size}`);
+            return { id, kind: id.startsWith("icon") ? ("icon" as const) : ("emoji" as const), label: id, source: `test source for ${id}`, url: `https://refs.test/${id}`, png: encodePng(id === "emoji:2615" ? CUP_REF : subject(size, [0, 0, 0])) };
+          },
+        },
+      };
+    }
+    const ICON_PLAN = { ...PLAN, checklist: [{ id: "subject", text: "One coffee cup" }], key_color: "#ffffff" };
+
+    it("conditions an icon on the reference the planner chose, steering away from its style, and records the source", async () => {
+      const { fake, comfy, workDir } = await setup({ objectInfo: kleinInfo(), render: () => encodePng(subject(768, [200, 40, 40])) });
+      const { library } = fakeLibrary();
+      const { llm, log } = stubLlm({
+        plan: { ...ICON_PLAN, references: [{ id: "emoji:2615", why: "same concept: a cup with steam" }] },
+        critic: () => ({ items: [{ id: "subject", pass: true }] }),
+      });
+      const res = await generateAsset(
+        { prompt: "a coffee cup icon with steam, flat style", width: 512, height: 512, transparent: true, kind: "icon" },
+        { comfy, llm, plannerModel: "test/planner", criticModel: "test/critic", workDir, references: { library } },
+      );
+      // The planner saw the candidates as a picture and as a list.
+      const planBody = log.find((l) => l.tool === PLAN_TOOL)!.body;
+      expect(positiveOf(planBody)).toContain("data:image/png;base64,");
+      expect(positiveOf(planBody)).toContain("emoji:2615 hot beverage");
+      expect(res.trace.references!.shape).toEqual([
+        { id: "emoji:2615", label: "emoji:2615", source: "test source for emoji:2615", url: "https://refs.test/emoji:2615", why: "same concept: a cup with steam" },
+      ]);
+      expect(res.trace.references!.candidates.map((c) => c.id)).toEqual(["emoji:2615", "icon:coffee"]);
+      const sent = fake.prompts[0]!.graph;
+      expect(sent.ref1Load!.inputs.image).toBe(fake.uploads[0]!.name);
+      expect(sent.ref2Load).toBeUndefined();
+      expect(String(sent.pos!.inputs.text)).toMatch(/Image 1 .*shape and concept only/);
+      expect(String(sent.pos!.inputs.text)).toMatch(/do not copy/i);
+      const r1 = res.trace.rounds[0]!;
+      expect(r1.checks.find((c) => c.id === "reference_copy")).toMatchObject({ pass: true });
+      expect(r1.referenceSimilarity).toEqual([expect.objectContaining({ id: "emoji:2615", nearCopy: false })]);
+      expect(res.trace.stopReason).toBe("all-pass");
+    });
+
+    it("fails an output that copies its reference, drops the reference on repair, and does not return the copy", async () => {
+      // Round 1 reproduces the reference (recoloured); round 2, without it, draws something new.
+      const { fake, comfy, workDir } = await setup({
+        objectInfo: kleinInfo(),
+        render: (_g, i) => encodePng(i === 0 ? subject(768, [200, 40, 40], true) : subject(768, [200, 40, 40])),
+      });
+      const { library } = fakeLibrary();
+      const { llm, log } = stubLlm({
+        plan: { ...ICON_PLAN, references: [{ id: "emoji:2615", why: "cup" }] },
+        critic: () => ({ items: [{ id: "subject", pass: true }] }),
+        repair: () => ({ rationale: "it copies the reference", edits: [{ op: "drop_reference", id: "emoji:2615" }] }),
+      });
+      const res = await generateAsset(
+        { prompt: "a coffee cup icon", width: 512, height: 512, transparent: true, kind: "icon" },
+        { comfy, llm, plannerModel: "test/planner", criticModel: "test/critic", workDir, references: { library } },
+      );
+      const r1 = res.trace.rounds[0]!;
+      expect(r1.checks.find((c) => c.id === "reference_copy")).toMatchObject({ pass: false });
+      expect(r1.referenceSimilarity![0]!.nearCopy).toBe(true);
+      expect(positiveOf(log.find((l) => l.tool === REPAIR_TOOL)!.body)).toContain("reference_copy");
+      expect(r1.repair!.applied).toEqual([{ op: "drop_reference", id: "emoji:2615" }]);
+      expect(Object.keys(fake.prompts[1]!.graph).some((k) => k.startsWith("ref"))).toBe(false);
+      expect(res.trace.best!.round).toBe(2);
+      expect(res.trace.stopReason).toBe("all-pass");
+    });
+
+    it("never returns a near-copy as the best image while another round is not one", async () => {
+      const { comfy, workDir } = await setup({
+        objectInfo: kleinInfo(),
+        render: (_g, i) => encodePng(i === 0 ? subject(768, [200, 40, 40]) : subject(768, [200, 40, 40], true)),
+      });
+      const { library } = fakeLibrary();
+      const { llm } = stubLlm({
+        plan: { ...ICON_PLAN, references: [{ id: "emoji:2615", why: "cup" }] },
+        // Round 1 misses a checklist item; round 2 passes it but copies the reference.
+        critic: (n) => ({ items: [{ id: "subject", pass: n > 0 }] }),
+        repair: () => ({ rationale: "new seed", edits: [{ op: "set_seed", seed: 99 }] }),
+      });
+      const res = await generateAsset(
+        { prompt: "a coffee cup icon", width: 512, height: 512, transparent: true, kind: "icon" },
+        { comfy, llm, plannerModel: "test/planner", criticModel: "test/critic", workDir, references: { library }, limits: { maxRounds: 2 } },
+      );
+      expect(res.trace.rounds[1]!.checks.find((c) => c.id === "reference_copy")!.pass).toBe(false);
+      expect(res.trace.best!.round).toBe(1);
+      expect(res.ok).toBe(false);
+    });
+
+    it("uses icons already made for the set as style references and grades consistency against them", async () => {
+      const { fake, comfy, workDir } = await setup({ objectInfo: kleinInfo(), render: () => encodePng(subject(768, [200, 40, 40])) });
+      const { llm, log } = stubLlm({
+        plan: ICON_PLAN,
+        critic: () => ({ items: [{ id: "subject", pass: true }, { id: "set_consistency", pass: true }] }),
+      });
+      const set = [
+        { id: "icons/leaf.png", png: encodePng(subject(256, [40, 160, 60])), label: "leaf" },
+        { id: "icons/rocket.png", png: encodePng(subject(256, [40, 60, 200])), label: "rocket" },
+      ];
+      const res = await generateAsset(
+        { prompt: "a coffee cup icon", width: 512, height: 512, transparent: true, kind: "icon" },
+        { comfy, llm, plannerModel: "test/planner", criticModel: "test/critic", workDir, references: { set } },
+      );
+      expect(res.trace.references!.set).toEqual([{ id: "icons/leaf.png", label: "leaf" }, { id: "icons/rocket.png", label: "rocket" }]);
+      expect(res.trace.plan.checklist.map((c) => c.id)).toEqual(["subject", "set_consistency"]);
+      const sent = fake.prompts[0]!.graph;
+      expect([sent.ref1Load, sent.ref2Load].map((n) => n!.inputs.image)).toEqual(fake.uploads.map((u) => u.name));
+      expect(String(sent.pos!.inputs.text)).toMatch(/Images 1–2 are icons already made for the same set/);
+      // The critic sees the asset and a sheet of the set.
+      const criticBody = log.find((l) => l.tool === CRITIC_TOOL)!.body;
+      expect(positiveOf(criticBody).match(/data:image\/png;base64,/g)).toHaveLength(2);
+      expect(positiveOf(criticBody)).toContain("same set");
+      expect(res.trace.rounds[0]!.referenceSimilarity!.map((s) => s.id)).toEqual(["icons/leaf.png", "icons/rocket.png"]);
+    });
+
+    it("generates without references, and says so, on a model that cannot take them", async () => {
+      const { fake, comfy, workDir } = await setup({ render: () => lanternPng(1024, 1024) });
+      const { library, loads } = fakeLibrary();
+      const { llm } = stubLlm({ plan: { ...PLAN, references: [{ id: "emoji:2615", why: "cup" }] }, critic: () => ({ items: [{ id: "count", pass: true }, { id: "background", pass: true }] }) });
+      const res = await generateAsset(
+        { prompt: "a coffee cup icon", width: 512, height: 512, kind: "icon" },
+        { comfy, llm, plannerModel: "test/planner", criticModel: "test/critic", workDir, references: { library, set: [{ id: "a.png", png: lanternPng(64, 64) }] } },
+      );
+      expect(loads).toEqual([]);
+      expect(res.trace.references).toMatchObject({ shape: [], set: [], note: expect.stringMatching(/cannot take reference images/) });
+      expect(Object.keys(fake.prompts[0]!.graph).some((k) => k.startsWith("ref"))).toBe(false);
+    });
+  });
+
+  it("records chroma keying as the cut-out method when no matting model is installed", async () => {
+    const { comfy, workDir } = await setup({ render: () => encodePng(discOnGreen(768, 768)) });
+    const { llm } = stubLlm({
+      plan: { ...PLAN, checklist: [{ id: "subject", text: "One red disc" }], key_color: "#00ff00" },
+      critic: () => ({ items: [{ id: "subject", pass: true }] }),
+    });
+    const res = await generateAsset(
+      { prompt: "a red disc icon", width: 256, height: 256, transparent: true },
+      { comfy, llm, plannerModel: "test/planner", criticModel: "test/critic", workDir },
+    );
+    expect(res.trace.server.cutout).toEqual({ method: "chroma-key" });
+    expect(res.trace.rounds[0]!.cutout).toMatchObject({ method: "chroma-key", backdrop: { requested: "#00FF00" } });
   });
 
   it("describes the cut-out view the critic actually receives in both system and user text", async () => {

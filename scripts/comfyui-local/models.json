@@ -103,6 +103,17 @@
       "license": "MIT",
       "licenseUrl": "https://huggingface.co/inclusionAI/Ming-Image-0.1-Design/blob/main/LICENSE",
       "commercialUse": true
+    },
+    {
+      "id": "birefnet",
+      "folder": "background_removal",
+      "file": "birefnet.safetensors",
+      "url": "https://huggingface.co/Comfy-Org/BiRefNet/resolve/main/background_removal/birefnet.safetensors",
+      "sha256": "9ab37426bf4de0567af6b5d21b16151357149139362e6e8992021b8ce356a154",
+      "bytes": 444473596,
+      "license": "MIT",
+      "licenseUrl": "https://huggingface.co/ZhengPeng7/BiRefNet/blob/main/README.md",
+      "commercialUse": true
     }
   ],
   "sets": [
@@ -133,6 +144,13 @@
       "models": ["ming-image-0.1-design-int8", "ming-ling-mini-2.0-w4a8", "ming-image-vae"],
       "minMemoryGb": 32,
       "default": false
+    },
+    {
+      "id": "matting",
+      "label": "BiRefNet background removal (cut-outs for transparent assets, core RemoveBackground node)",
+      "models": ["birefnet"],
+      "minMemoryGb": 8,
+      "default": true
     }
   ]
 }
