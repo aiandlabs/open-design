@@ -190,3 +190,32 @@ describe("configuration", () => {
     expect(() => parseJsonLoose("nothing", "x")).toThrow(LlmFormatError);
   });
 });
+
+describe("AiandClient retries", () => {
+  const OK = { choices: [{ message: { tool_calls: [{ function: { name: "submit", arguments: { ok: true } } }] } }], usage: { prompt_tokens: 1, completion_tokens: 1 } };
+
+  it("retries a dropped connection, a 429 and a 5xx, then succeeds", async () => {
+    let n = 0;
+    const fn = (async (input: string | URL | Request) => {
+      if (String(input).endsWith("/models")) return new Response(JSON.stringify(MODELS), { status: 200 });
+      n++;
+      if (n === 1) throw new TypeError("fetch failed");
+      if (n === 2) return new Response("{}", { status: 429, headers: { "retry-after": "0" } });
+      if (n === 3) return new Response("{}", { status: 503 });
+      return new Response(JSON.stringify(OK), { status: 200 });
+    }) as typeof fetch;
+    const res = await new AiandClient({ apiKey: "k", fetch: fn, retryBaseDelayMs: 1 }).structured<{ ok: boolean }>(REQ);
+    expect(res.data.ok).toBe(true);
+    expect(n).toBe(4);
+  });
+
+  it("does not retry a 400, and gives up after the retry limit", async () => {
+    const bad = stubFetch(() => ({ status: 400, json: { error: { message: "bad" } } }));
+    await expect(new AiandClient({ apiKey: "k", fetch: bad.fn, retryBaseDelayMs: 1 }).structured(REQ)).rejects.toBeInstanceOf(LlmHttpError);
+    expect(bad.calls.filter((c) => !c.url.endsWith("/models"))).toHaveLength(1);
+
+    const down = stubFetch(() => ({ status: 502, json: {} }));
+    await expect(new AiandClient({ apiKey: "k", fetch: down.fn, retryBaseDelayMs: 1, maxRetries: 2 }).structured(REQ)).rejects.toMatchObject({ status: 502 });
+    expect(down.calls.filter((c) => !c.url.endsWith("/models"))).toHaveLength(3);
+  });
+});

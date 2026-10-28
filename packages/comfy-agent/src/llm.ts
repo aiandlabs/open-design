@@ -24,6 +24,10 @@ export type LlmClientOptions = {
   shape?: ApiShape;
   fetch?: typeof fetch;
   requestTimeoutMs?: number;
+  /** Retries after a dropped connection, a 429 or a 5xx (default 3). Other errors are not retried. */
+  maxRetries?: number;
+  /** First retry delay; it doubles each time, and a `Retry-After` header takes precedence (default 1000 ms). */
+  retryBaseDelayMs?: number;
   /**
    * Model catalog for prices and model selection. Defaults to the shared
    * catalog for this base URL and key, or a private one when `fetch` is
@@ -88,6 +92,8 @@ export class AiandClient {
   private readonly apiKey: string;
   private readonly fetchImpl: typeof fetch;
   private readonly requestTimeoutMs: number;
+  private readonly maxRetries: number;
+  private readonly retryBaseDelayMs: number;
   readonly catalog: AiandModelCatalog;
 
   constructor(options: LlmClientOptions = {}) {
@@ -98,6 +104,8 @@ export class AiandClient {
     this.shape = options.shape ?? "openai";
     this.fetchImpl = options.fetch ?? globalThis.fetch.bind(globalThis);
     this.requestTimeoutMs = options.requestTimeoutMs ?? 180_000;
+    this.maxRetries = options.maxRetries ?? 3;
+    this.retryBaseDelayMs = options.retryBaseDelayMs ?? 1000;
     this.catalog =
       options.catalog ??
       (options.fetch
@@ -117,22 +125,41 @@ export class AiandClient {
     return this.catalog.resolve(role, configured);
   }
 
+  /**
+   * POST with bounded retries. A dropped connection, 429 and 5xx are
+   * transient on a shared gateway; one of them should not lose an asset that
+   * took minutes of GPU time. Anything else fails at once.
+   */
+  private async post(url: string, shape: ApiShape, body: unknown): Promise<{ res: Response; text: string }> {
+    for (let attempt = 0; ; attempt++) {
+      let failure: LlmHttpError;
+      let retryAfterMs: number | undefined;
+      try {
+        const res = await this.fetchImpl(url, {
+          method: "POST",
+          headers: this.headers(shape),
+          body: JSON.stringify(body),
+          signal: AbortSignal.timeout(this.requestTimeoutMs),
+        });
+        const text = await res.text();
+        if (res.ok) return { res, text };
+        failure = new LlmHttpError(url, res.status, text);
+        if (res.status !== 429 && res.status < 500) throw failure;
+        const header = Number(res.headers.get("retry-after"));
+        if (Number.isFinite(header) && header >= 0) retryAfterMs = header * 1000;
+      } catch (err) {
+        if (err instanceof LlmHttpError) throw err;
+        failure = new LlmHttpError(url, 0, `request failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
+      if (attempt >= this.maxRetries) throw failure;
+      await new Promise((r) => setTimeout(r, retryAfterMs ?? this.retryBaseDelayMs * 2 ** attempt));
+    }
+  }
+
   async structured<T>(req: StructuredRequest, shape: ApiShape = this.shape): Promise<StructuredResult<T>> {
     const started = Date.now();
     const { url, body } = shape === "anthropic" ? this.anthropicRequest(req) : this.openaiRequest(req);
-    let res: Response;
-    try {
-      res = await this.fetchImpl(url, {
-        method: "POST",
-        headers: this.headers(shape),
-        body: JSON.stringify(body),
-        signal: AbortSignal.timeout(this.requestTimeoutMs),
-      });
-    } catch (err) {
-      throw new LlmHttpError(url, 0, `request failed: ${err instanceof Error ? err.message : String(err)}`);
-    }
-    const text = await res.text();
-    if (!res.ok) throw new LlmHttpError(url, res.status, text);
+    const { res, text } = await this.post(url, shape, body);
     let json: Record<string, unknown>;
     try {
       json = JSON.parse(text);

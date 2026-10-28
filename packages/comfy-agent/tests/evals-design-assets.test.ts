@@ -263,7 +263,7 @@ describe("judge", () => {
       if (!next) throw new Error("unexpected call");
       return next();
     }) as typeof fetch;
-    return { llm: new AiandClient({ apiKey: "test-key", baseUrl: "https://llm.test/v1", fetch: fetchImpl }), calls };
+    return { llm: new AiandClient({ apiKey: "test-key", baseUrl: "https://llm.test/v1", fetch: fetchImpl, maxRetries: 0 }), calls };
   }
   const toolReply = (args: unknown) => () =>
     new Response(JSON.stringify({ choices: [{ message: { tool_calls: [{ type: "function", function: { name: JUDGE_TOOL, arguments: JSON.stringify(args) } }] } }], usage: { prompt_tokens: 1000, completion_tokens: 100 } }));
@@ -576,7 +576,7 @@ describe("icon sets", () => {
     expect(j).toMatchObject({ set: "s", arm: "loop", seed: 1, members: ["a", "b", "c"], score: 2, consistent: false, outliers: ["c"], costUsd: 0.001 });
     expect(JSON.stringify(calls[0]!.messages).match(/data:image\/png;base64,/g)).toHaveLength(1);
 
-    const broken = new AiandClient({ apiKey: "k", baseUrl: "https://llm.test/v1", fetch: (async () => new Response("no", { status: 500 })) as typeof fetch });
+    const broken = new AiandClient({ apiKey: "k", baseUrl: "https://llm.test/v1", fetch: (async () => new Response("no", { status: 500 })) as typeof fetch, maxRetries: 0 });
     expect((await judgeSet("s", "loop", 1, members, { llm: broken, model: "judge/vision", shape: "openai" })).error).toBeTruthy();
   });
 
