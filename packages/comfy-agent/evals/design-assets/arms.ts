@@ -9,7 +9,8 @@ import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 import type { ComfyClient } from "../../src/client.js";
-import { buildTxt2Img, chooseCheckpoint, defaultSampling, detectFamily, planGenerationSize } from "../../src/graphs.js";
+import { buildTxt2Img, chooseModel, defaultSampling, planGenerationSize } from "../../src/graphs.js";
+import { isSplitFamily } from "../../src/families.js";
 import { decodePng, encodePng, type RgbaImage } from "../../src/image.js";
 import type { AiandClient, ApiShape } from "../../src/llm.js";
 import { deterministicChecks, generateAsset, postProcess, type AssetRequest } from "../../src/loop.js";
@@ -95,14 +96,20 @@ export async function runArm(arm: Arm, task: EvalTask, seed: number, ctx: ArmCon
 async function runRaw(task: EvalTask, seed: number, ctx: ArmContext, signal: AbortSignal, started: number): Promise<ArmOutput> {
   const req = request(task, seed);
   const info = await ctx.comfy.getObjectInfo();
-  const checkpoint = chooseCheckpoint(info);
-  const family = detectFamily(checkpoint);
+  // The same model the plan and loop arms use (the server default), so the
+  // arms differ only in planning and repair, not in the image model.
+  const choice = chooseModel(info);
+  const checkpoint = choice.model;
+  const family = choice.family;
   const gen = planGenerationSize(family, task.width, task.height);
   const sampling = { ...defaultSampling(family, info), seed };
   const keyColor = task.transparent ? RAW_KEY_COLOR : undefined;
   const doc = buildTxt2Img({
     checkpoint,
-    positive: composeKeyedPrompt(task.prompt, keyColor),
+    family,
+    ...(choice.textEncoder ? { textEncoder: choice.textEncoder } : {}),
+    ...(choice.vae ? { vae: choice.vae } : {}),
+    positive: composeKeyedPrompt(task.prompt, keyColor, isSplitFamily(family) ? "sentences" : "tags"),
     negative: keyColor ? KEY_NEGATIVE : "",
     width: gen.width,
     height: gen.height,

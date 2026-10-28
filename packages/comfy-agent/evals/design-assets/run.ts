@@ -15,7 +15,7 @@ import path from "node:path";
 import { parseArgs } from "node:util";
 
 import { ComfyClient } from "../../src/client.js";
-import { chooseCheckpoint } from "../../src/graphs.js";
+import { chooseModel } from "../../src/graphs.js";
 import { resolveComfyAgentConfig, parseApiShape } from "../../src/config.js";
 import { AiandClient, type ApiShape } from "../../src/llm.js";
 import { runArm } from "./arms.js";
@@ -193,7 +193,7 @@ async function main(): Promise<void> {
     // A resumed run must keep the models it started with; otherwise the
     // comparison would be between models, not arms. Refuse to mix unless asked.
     const existing = await readResults(resultsFile);
-    const checkpoint = chooseCheckpoint(await comfy.getObjectInfo());
+    const checkpoint = chooseModel(await comfy.getObjectInfo()).model;
     const existingCheckpoints = await Promise.all(existing.filter((r) => r.status === "ok").map((r) => checkpointOf(r)));
     const existingLlms = await Promise.all(existing.filter((r) => r.status === "ok").map((r) => llmModelsOf(r)));
     const mixed = [

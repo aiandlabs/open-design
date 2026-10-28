@@ -25,9 +25,14 @@ import { bootstrapMeanCi, cohensKappa, comparePaired, median, quantile, signTest
 import { armStats, judgeAgreement, modelsReport, pairedReport, renderSummaryMarkdown, scoreRow, summarize } from "../evals/design-assets/summary.js";
 import { checkpointOf, executionMs, foreignCheckpoints, llmModelsOf } from "../evals/design-assets/timing.js";
 import { DEFAULT_RELIABILITY_SUBSET, loadTasks, parseTasks, selectTasks, type EvalTask } from "../evals/design-assets/tasks.js";
+import { runArm } from "../evals/design-assets/arms.js";
+import { ComfyClient } from "../src/client.js";
 import { AiandClient } from "../src/llm.js";
 import { ModelSelectionError } from "../src/errors.js";
 import type { AiandModel } from "../src/models.js";
+import { solidPng, startFakeComfy } from "./fixtures/fake-comfy.js";
+import { makeObjectInfo } from "./fixtures/object-info.js";
+import { FAMILY_NODES } from "./fixtures/object-info-families.js";
 
 const cleanups: (() => Promise<void>)[] = [];
 afterEach(async () => {
@@ -450,5 +455,33 @@ describe("reports", () => {
     expect(files).toEqual(["summary.md", "summary.json", "contact-sheet.html", "judge-subset.html"]);
     const json = JSON.parse(await readFile(path.join(dir, "summary.json"), "utf8"));
     expect(json.perArm.map((a: { arm: string }) => a.arm)).toEqual(["raw", "loop"]);
+  });
+});
+
+describe("raw arm", () => {
+  it("uses the server's default model, the same one the plan and loop arms use", async () => {
+    const fake = await startFakeComfy({ objectInfo: { ...makeObjectInfo(), ...structuredClone(FAMILY_NODES) }, render: () => solidPng(512, 512) });
+    const workDir = await mkdtemp(path.join(os.tmpdir(), "raw-arm-"));
+    try {
+      const task = (await loadTasks()).find((t) => !t.transparent)!;
+      const out = await runArm("raw", task, 1, {
+        comfy: new ComfyClient({ baseUrl: fake.url, WebSocket: null, pollIntervalMs: 10 }),
+        llm: new AiandClient({ apiKey: "unused" }),
+        plannerModel: "p",
+        criticModel: "c",
+        shape: "openai",
+        loopMaxRounds: 1,
+        timeoutMs: 10_000,
+        workDir,
+      });
+      expect(out.row.status).toBe("ok");
+      expect(out.row.checkpoint).toBe("flux-2-klein-4b.safetensors");
+      const graph = fake.prompts[0]!.graph;
+      expect(graph.unet!.inputs.unet_name).toBe("flux-2-klein-4b.safetensors");
+      expect(Object.values(graph).some((n) => n.class_type === "CheckpointLoaderSimple")).toBe(false);
+    } finally {
+      await fake.close();
+      await rm(workDir, { recursive: true, force: true });
+    }
   });
 });
