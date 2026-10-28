@@ -21,7 +21,8 @@ import { readFileSync } from 'node:fs';
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { createHash, randomBytes } from 'node:crypto';
 import path from 'node:path';
-import type { OdNextRolloutMode } from '@open-design/contracts';
+import type { OdNextRolloutMode, VisualCheckPrefs } from '@open-design/contracts';
+import { normalizeVisualCheckPrefs } from '@open-design/contracts';
 
 import { expandHomePrefix } from './home-expansion.js';
 
@@ -136,6 +137,9 @@ export interface AppConfigPrefs {
   // `metadata.linkedDirs` (read-only `--add-dir` awareness, no Design Files
   // import). Stored most-recent-first; capped at RECENT_LINKED_DIRS_MAX.
   recentLinkedDirs?: string[];
+  // Settings → visual check: per-task `od visual-check` budget (0..3, 0 =
+  // off) and the ai& vision model it calls.
+  visualCheck?: VisualCheckPrefs | null;
 }
 
 // Cap on how many recent working directories we remember. Keeps the picker's
@@ -162,6 +166,7 @@ const ALLOWED_KEYS: ReadonlySet<keyof AppConfigPrefs> = new Set([
   'defaultProjectLocationId',
   'odNextStrategyMode',
   'recentLinkedDirs',
+  'visualCheck',
 ] as const);
 
 function configFile(dataDir: string): string {
@@ -674,6 +679,17 @@ function applyConfigValue(
       delete target[key];
     } else {
       target[key] = OD_NEXT_MODE_WHEN_CONFIG_UNREADABLE;
+    }
+    return;
+  }
+  if (key === 'visualCheck') {
+    const validated = normalizeVisualCheckPrefs(value);
+    if (validated !== undefined) {
+      target[key] = validated;
+    } else if (value === null) {
+      target[key] = null;
+    } else {
+      delete target[key];
     }
     return;
   }

@@ -38,6 +38,7 @@ import {
   PLUGIN_SHARE_ACTION_PLUGIN_IDS,
   renderChatTurnHostProtocolInstructions,
   resolveOdNextDeckFrameworkMode,
+  normalizeVisualCheckRounds,
 } from '@open-design/contracts';
 
 import type {
@@ -912,6 +913,8 @@ import { registerRunRoutes } from './routes/runs.js';
 import { registerStrategyRolloutRoutes } from './routes/strategy-rollout.js';
 import { registerTerminalRoutes } from './routes/terminal.js';
 import { registerBrowserSessionRoutes } from './routes/browser-sessions.js';
+import { registerVisualCheckRoutes } from './routes/visual-check.js';
+import { createVisualCheckRouteDeps } from './visual-check/route-deps.js';
 import { createTerminalService } from './terminals.js';
 import { createBrowserSessionService } from './browser-sessions.js';
 import { registerSocialShareRoutes } from './routes/social-share.js';
@@ -1161,6 +1164,7 @@ import {
   CHAT_TOOL_ENDPOINTS,
   CHAT_TOOL_OPERATIONS,
   PROJECT_EXPORT_TOOL_ENDPOINT,
+  VISUAL_CHECK_TOOL_ENDPOINT,
   resolveChatToolTokenTtlMs,
   toolTokenRegistry,
 } from './tool-tokens.js';
@@ -2602,6 +2606,7 @@ const PROJECT_PREVIEW_SCOPE_TTL_MS = 60 * 60 * 1000;
 const PROJECT_PREVIEW_ASSET_PATH_RE = /^\/projects\/([^/]+)\/preview\/([^/]+)\/.+$/u;
 const PROJECT_RUN_SCOPED_EXPORT_PATH_RE =
   /^\/projects\/[^/]+\/export(?:\/(?:pptx|pdf-image|image))?$/u;
+const PROJECT_RUN_SCOPED_VISUAL_CHECK_PATH_RE = /^\/projects\/[^/]+\/visual-check$/u;
 
 function createProjectPreviewScopeRegistry() {
   const scopes = new Map();
@@ -3328,6 +3333,16 @@ export async function startServer({
         && toolTokenRegistry.validate(bearerTokenFromRequest(req), {
           endpoint: PROJECT_EXPORT_TOOL_ENDPOINT,
           operation: 'project:export',
+        }).ok
+      ) {
+        return next();
+      }
+      if (
+        req.method === 'POST'
+        && PROJECT_RUN_SCOPED_VISUAL_CHECK_PATH_RE.test(req.path)
+        && toolTokenRegistry.validate(bearerTokenFromRequest(req), {
+          endpoint: VISUAL_CHECK_TOOL_ENDPOINT,
+          operation: 'project:visual-check',
         }).ok
       ) {
         return next();
@@ -9798,6 +9813,26 @@ export async function startServer({
     authorizeProjectRequest,
   });
 
+  registerVisualCheckRoutes(app, createVisualCheckRouteDeps({
+    db,
+    getProject,
+    sendApiError,
+    isLocalSameOrigin,
+    resolvedPortRef,
+    authorizeProjectRequest,
+    authorizeProjectToolRequest,
+    authorizeToolRequest,
+    PROJECT_ROOT,
+    PROJECTS_DIR,
+    readVisualCheckPrefs: async () => (await readAppConfig(RUNTIME_DATA_DIR)).visualCheck ?? null,
+    listConversations,
+    listMessages,
+    projectPreviewScopes,
+    daemonUrlRef,
+    desktopArtifactExporter,
+    browserSessions: browserSessionService,
+  }));
+
   registerMediaRoutes(app, {
     db,
     design,
@@ -10439,6 +10474,11 @@ export async function startServer({
     } catch (err) {
       console.warn('[app-config] readAppConfig failed', err);
     }
+    // Settings → visual check rounds. 0 (the default) adds nothing to either
+    // prompt side; see apps/daemon/src/prompts/visual-check-budget.ts.
+    const visualCheckRoundsForPrompt = normalizeVisualCheckRounds(
+      appConfigForPrompt?.visualCheck?.rounds,
+    );
     let pluginDesignSystemId = null;
     if (
       typeof appliedPluginSnapshotId === 'string' &&
@@ -11066,6 +11106,7 @@ export async function startServer({
       mediaExecution,
       byokMediaDefaults,
       comfyuiConfigured: await hasStoredProviderEntry(PROJECT_ROOT, 'comfyui').catch(() => false),
+      ...(visualCheckRoundsForPrompt > 0 ? { visualCheckRounds: visualCheckRoundsForPrompt } : {}),
       streamFormat,
       executionProfile: executionProfileFromStreamFormat(streamFormat),
       ...(pluginBlock ? { pluginBlock } : {}),
@@ -11180,6 +11221,7 @@ export async function startServer({
           // Suppress the stable-context renderer's eager deck-intent fallback too.
           deckIntent: odNextStrategyRecipe.taskType !== 'discovery' && odNextDeckIntent,
           deckFrameworkMode: odNextDeckFrameworkMode,
+          ...(visualCheckRoundsForPrompt > 0 ? { visualCheckRounds: visualCheckRoundsForPrompt } : {}),
           metadata,
           template,
           exampleReference: odNextExampleReference,
