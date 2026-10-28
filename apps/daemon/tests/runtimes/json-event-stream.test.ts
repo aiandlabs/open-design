@@ -38,6 +38,40 @@ test('opencode json stream emits text and usage events', () => {
   ]);
 });
 
+test('opencode step_finish with a length finish reports a max_tokens truncation on usage', () => {
+  // The step that should have written index.html in run c70629a2 (CUJ C3)
+  // ended on the output-token limit; OpenCode reports the AI SDK's normalized
+  // finish reason, `length`, on the step-finish part.
+  const { events, handler } = collectEvents('opencode');
+  handler.feed(
+    '{"type":"step_finish","sessionID":"ses-1","part":{"type":"step-finish","reason":"length","tokens":{"input":4476,"output":2888,"reasoning":13496,"cache":{"read":38656,"write":0}},"cost":0}}\n',
+  );
+  assert.deepEqual(events, [
+    {
+      type: 'usage',
+      usage: {
+        input_tokens: 4476,
+        output_tokens: 2888,
+        thought_tokens: 13496,
+        cached_read_tokens: 38656,
+        cached_write_tokens: 0,
+      },
+      costUsd: 0,
+      stopReason: 'max_tokens',
+    },
+  ]);
+});
+
+test('opencode step_finish with an ordinary finish reason adds no stopReason', () => {
+  const { events, handler } = collectEvents('opencode');
+  handler.feed(
+    '{"type":"step_finish","sessionID":"ses-1","part":{"type":"step-finish","reason":"tool-calls","tokens":{"input":1,"output":1,"reasoning":0,"cache":{"read":0,"write":0}},"cost":0}}\n' +
+    '{"type":"step_finish","sessionID":"ses-1","part":{"type":"step-finish","reason":"stop","tokens":{"input":1,"output":1,"reasoning":0,"cache":{"read":0,"write":0}},"cost":0}}\n',
+  );
+  assert.equal(events.length, 2);
+  for (const event of events) assert.equal('stopReason' in event, false);
+});
+
 test('opencode step_start surfaces the session id as the status sessionId (capture-style resume handle)', () => {
   const { events, handler } = collectEvents('opencode');
   handler.feed('{"type":"step_start","sessionID":"ses_4af9c2","part":{"type":"step-start"}}\n');

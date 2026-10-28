@@ -433,6 +433,116 @@ process.exit(0);
     );
   });
 
+  it('marks OpenCode runs failed when the output-token limit cut the turn off before any file was written', async () => {
+    const projectId = `proj-${randomUUID()}`;
+    const createProjectResponse = await fetch(`${baseUrl}/api/projects`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: projectId, name: 'Output limit' }),
+    });
+    expect(createProjectResponse.ok).toBe(true);
+    // CUJ C3: the step meant to write index.html ended on the output-token
+    // limit (2,888 output + 13,496 reasoning = 16,384); OpenCode dropped the
+    // truncated write and exited 0, and the run read "succeeded" with no file.
+    const conversationId = `conv-${randomUUID()}`;
+
+    await withFakeAgent(
+      'opencode',
+      `
+console.log(JSON.stringify({ type: 'step_start', sessionID: 'opencode-length-session' }));
+console.log(JSON.stringify({ type: 'text', sessionID: 'opencode-length-session', part: { type: 'text', text: 'Writing index.html now.' } }));
+console.log(JSON.stringify({
+  type: 'step_finish',
+  sessionID: 'opencode-length-session',
+  part: { type: 'step-finish', reason: 'length', tokens: { input: 4476, output: 2888, reasoning: 13496, cache: { read: 0, write: 0 } }, cost: 0 },
+}));
+process.exit(0);
+`,
+      async () => {
+        const response = await fetch(`${baseUrl}/api/chat`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            agentId: 'opencode',
+            projectId,
+            conversationId,
+            message: 'build the screen',
+          }),
+        });
+        const body = await response.text();
+
+        expect(response.ok).toBe(true);
+        expect(body).toContain('AGENT_EXECUTION_FAILED');
+        expect(body).toContain('output-token limit');
+        expect(body).toContain('"status":"failed"');
+        expect(body).not.toContain('"status":"succeeded"');
+
+        const runsResponse = await fetch(
+          `${baseUrl}/api/runs?conversationId=${encodeURIComponent(conversationId)}`,
+        );
+        const runsBody = (await runsResponse.json()) as {
+          runs: Array<{ conversationId: string | null; status: string }>;
+        };
+        expect(runsBody.runs).toHaveLength(1);
+        expect(runsBody.runs[0]).toMatchObject({ conversationId, status: 'failed' });
+      },
+    );
+  });
+
+  it('keeps an OpenCode run that wrote its file succeeded, but unfinished, when a later step hit the output-token limit', async () => {
+    const projectId = `proj-${randomUUID()}`;
+    const createProjectResponse = await fetch(`${baseUrl}/api/projects`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: projectId, name: 'Output limit' }),
+    });
+    expect(createProjectResponse.ok).toBe(true);
+    const conversationId = `conv-${randomUUID()}`;
+
+    await withFakeAgent(
+      'opencode',
+      `
+const fs = require('node:fs');
+fs.writeFileSync('index.html', '<!doctype html><title>ok</title>');
+console.log(JSON.stringify({ type: 'step_start', sessionID: 'opencode-length-wrote' }));
+console.log(JSON.stringify({
+  type: 'tool_use',
+  sessionID: 'opencode-length-wrote',
+  part: {
+    tool: 'write',
+    callID: 'call-write-1',
+    state: { status: 'completed', input: { filePath: 'index.html', content: '<!doctype html><title>ok</title>' }, output: 'Wrote file successfully.' },
+  },
+}));
+console.log(JSON.stringify({ type: 'text', sessionID: 'opencode-length-wrote', part: { type: 'text', text: 'Wrote the page.' } }));
+console.log(JSON.stringify({
+  type: 'step_finish',
+  sessionID: 'opencode-length-wrote',
+  part: { type: 'step-finish', reason: 'length', tokens: { input: 10, output: 16384, reasoning: 0, cache: { read: 0, write: 0 } }, cost: 0 },
+}));
+process.exit(0);
+`,
+      async () => {
+        const response = await fetch(`${baseUrl}/api/chat`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            agentId: 'opencode',
+            projectId,
+            conversationId,
+            message: 'build the screen',
+          }),
+        });
+        const body = await response.text();
+
+        expect(response.ok).toBe(true);
+        expect(body).not.toContain('output-token limit');
+        expect(body).toContain('"status":"succeeded"');
+        expect(body).toContain('"endedWithUnfinishedWork":true');
+      },
+    );
+  });
+
   it('marks OpenCode tool-only runs failed when no assistant output is produced', async () => {
     const conversationId = `conv-${randomUUID()}`;
 

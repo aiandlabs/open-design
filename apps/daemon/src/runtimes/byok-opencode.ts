@@ -39,9 +39,29 @@ export function opencodeByokModelId(model: string | null | undefined): string | 
   return `${BYOK_OPENCODE_PROVIDER_ID}/${trimmed}`;
 }
 
+/**
+ * Token limits for the run model. `output` and `context` come from the
+ * provider's model list when it gives them (see
+ * `integrations/byok-model-limits.ts`); a missing value keeps the default.
+ */
+export interface OpenCodeByokModelLimits {
+  output?: number;
+  context?: number;
+}
+
+function resolveTokenLimits(limits: OpenCodeByokModelLimits | null | undefined) {
+  const context = limits?.context ?? DEFAULT_CONTEXT_TOKEN_LIMIT;
+  const output = limits?.output ?? DEFAULT_OUTPUT_TOKEN_LIMIT;
+  // OpenCode reserves the output limit out of the context window. A list that
+  // gives the same number for both (output may use the whole window) would
+  // leave no room for input, so keep at most half the window for output.
+  return { context, output: Math.min(output, Math.floor(context / 2)) };
+}
+
 export function buildOpenCodeByokProviderConfig(
   provider: ByokChatProviderConfig | null | undefined,
   model: string | null | undefined,
+  limits?: OpenCodeByokModelLimits | null,
 ): OpenCodeByokProviderConfig | null {
   if (!provider || typeof provider !== 'object') return null;
   const protocol = provider.protocol;
@@ -84,10 +104,7 @@ export function buildOpenCodeByokProviderConfig(
             // configured endpoint validate them. This run-scoped transport
             // policy is not a persisted claim about the model's capabilities.
             modalities: { input: ['text', 'image'], output: ['text'] },
-            limit: {
-              context: DEFAULT_CONTEXT_TOKEN_LIMIT,
-              output: DEFAULT_OUTPUT_TOKEN_LIMIT,
-            },
+            limit: resolveTokenLimits(limits),
           },
         },
       },

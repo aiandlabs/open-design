@@ -183,6 +183,11 @@ import {
   scanRunEventsForFinishedProps,
   scanRunEventsForRetrySideEffects,
 } from './runtimes/run-lifecycle-analytics.js';
+import { resolveByokModelLimits } from './integrations/byok-model-limits.js';
+import {
+  OUTPUT_LIMIT_NO_DELIVERABLE_MESSAGE,
+  runEndedOnOutputLimitWithoutDeliverable,
+} from './runtimes/output-limit.js';
 export {
   composeChatAgentTextPayload,
   composeLiveInstructionPrompt,
@@ -11636,10 +11641,16 @@ export async function startServer({
       );
     if (!def.bin)
       return failRun('AGENT_UNAVAILABLE', 'agent has no binary');
+    // The provider's own model list sets the output and context limits when
+    // it lists them (ai& does); otherwise the run keeps the defaults.
+    const byokModelLimits = def.id === 'byok-opencode' && byokProvider
+      ? await resolveByokModelLimits(byokProvider, typeof model === 'string' ? model : null)
+      : null;
     const byokOpenCodeProvider = def.id === 'byok-opencode'
       ? buildOpenCodeByokProviderConfig(
           byokProvider,
           typeof model === 'string' ? model : null,
+          byokModelLimits,
         )
       : null;
     if (def.id === 'byok-opencode' && !byokOpenCodeProvider) {
@@ -16912,6 +16923,29 @@ export async function startServer({
         send('error', createSseErrorPayload(
           'AGENT_EXECUTION_FAILED',
           'Agent completed without producing any output. The model or provider may have returned an empty response. Check the agent logs for upstream errors, then try re-authenticating the agent or switching models.',
+          { retryable: true },
+        ));
+        return finishWithRetryDecision('failed', code, signal);
+      }
+      // Output-limit guard: the model was cut off at its output-token limit and
+      // nothing reached the project. Exiting 0 is not a delivery. The
+      // filesystem diff is read only for truncated runs, after the process
+      // tree has settled, as the success path below does.
+      if (
+        code === 0 &&
+        !run.cancelRequested &&
+        run.truncatedMidTurn === true &&
+        runEndedOnOutputLimitWithoutDeliverable(
+          run,
+          (await (async () => {
+            if (acpAttemptTermination) await acpAttemptTermination;
+            return resolveRunArtifactOutcomeBeforeFinishAsync();
+          })())?.artifactCount,
+        )
+      ) {
+        send('error', createSseErrorPayload(
+          'AGENT_EXECUTION_FAILED',
+          OUTPUT_LIMIT_NO_DELIVERABLE_MESSAGE,
           { retryable: true },
         ));
         return finishWithRetryDecision('failed', code, signal);

@@ -272,10 +272,16 @@ function handleOpenCodeEvent(obj: unknown, onEvent: StreamEventHandler, state: P
   if (obj.type === 'step_finish') {
     const usage = formatOpenCodeUsage(part.tokens);
     if (usage) {
+      // OpenCode reports the AI SDK's normalized finish reason; `length` is a
+      // cut-off at the output-token limit. Report it in the canonical
+      // truncation vocabulary so the run is flagged incomplete
+      // (`stopReasonIsTruncation`). Other reasons carry no completeness signal.
+      const truncated = part.reason === 'length';
       onEvent({
         type: 'usage',
         usage,
         costUsd: typeof part.cost === 'number' ? part.cost : undefined,
+        ...(truncated ? { stopReason: 'max_tokens' } : {}),
       });
     }
     return true;
