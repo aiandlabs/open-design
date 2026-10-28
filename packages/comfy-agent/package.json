@@ -21,6 +21,7 @@
   "scripts": {
     "build": "node ./esbuild.config.mjs && tsc -p tsconfig.json --emitDeclarationOnly",
     "test": "vitest run",
+    "eval:design-assets": "tsx ./evals/design-assets/run.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.tests.json --noEmit"
   },
   "dependencies": {
@@ -32,6 +33,7 @@
     "@types/node": "24.12.2",
     "@types/pngjs": "6.0.5",
     "esbuild": "0.28.0",
+    "tsx": "4.22.3",
     "vitest": "4.1.6"
   },
   "engines": {
