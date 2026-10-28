@@ -62,8 +62,14 @@ export type StructuredResult<T> = {
   model: string;
   shape: ApiShape;
   usage: TokenUsage;
-  /** Cost the API reported in the response, when it reports one. */
+  /** Cost the API reported for this request in US dollars, when it reports one. */
   reportedCostUsd?: number;
+  /**
+   * The reported cost as sent: from the `X-Cost` / `X-Cost-Currency` response
+   * headers (exact, answered because the request sends `X-Aiand-Metrics: true`)
+   * or from a cost field in the body. Kept in its own currency.
+   */
+  reportedCost?: { amount: number; currency: string; source: "x-cost" | "body" };
   /** Cost computed from `/models` prices and the usage above. */
   estimatedCostUsd?: number;
   latencyMs: number;
@@ -100,9 +106,10 @@ export class AiandClient {
   }
 
   private headers(shape: ApiShape): Record<string, string> {
+    // X-Aiand-Metrics asks ai& for the exact cost of this request in X-Cost / X-Cost-Currency.
     return shape === "anthropic"
-      ? { "x-api-key": this.apiKey, authorization: `Bearer ${this.apiKey}`, "anthropic-version": ANTHROPIC_VERSION, "content-type": "application/json" }
-      : { authorization: `Bearer ${this.apiKey}`, "content-type": "application/json" };
+      ? { "x-api-key": this.apiKey, authorization: `Bearer ${this.apiKey}`, "anthropic-version": ANTHROPIC_VERSION, "content-type": "application/json", "x-aiand-metrics": "true" }
+      : { authorization: `Bearer ${this.apiKey}`, "content-type": "application/json", "x-aiand-metrics": "true" };
   }
 
   /** The model for a role: the configured id after validation, or a pick from the catalog. */
@@ -134,14 +141,22 @@ export class AiandClient {
     }
     const parsed = shape === "anthropic" ? parseAnthropic(json, req.toolName) : parseOpenAI(json, req.toolName);
     const usage = shape === "anthropic" ? anthropicUsage(json) : openaiUsage(json);
-    const reported = reportedCost(json);
+    // The X-Cost header is exact; a body field is the fallback (assumed USD).
+    const headerCost = Number(res.headers.get("x-cost") ?? Number.NaN);
+    const bodyCost = reportedCost(json);
+    const reported: StructuredResult<T>["reportedCost"] = Number.isFinite(headerCost)
+      ? { amount: headerCost, currency: (res.headers.get("x-cost-currency") ?? "USD").trim().toUpperCase(), source: "x-cost" }
+      : bodyCost !== undefined
+        ? { amount: bodyCost, currency: "USD", source: "body" }
+        : undefined;
     const result: StructuredResult<T> = {
       data: parsed as T,
       model: typeof json.model === "string" ? json.model : req.model,
       shape,
       usage,
       latencyMs: Date.now() - started,
-      ...(reported === undefined ? {} : { reportedCostUsd: reported }),
+      ...(reported ? { reportedCost: reported } : {}),
+      ...(reported?.currency === "USD" ? { reportedCostUsd: reported.amount } : {}),
     };
     const estimate = await this.estimateCost(req.model, usage).catch(() => undefined);
     if (estimate !== undefined) result.estimatedCostUsd = estimate;

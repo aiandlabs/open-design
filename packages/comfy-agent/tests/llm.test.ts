@@ -14,7 +14,7 @@ const MODELS = {
   ],
 };
 
-function stubFetch(respond: (url: string, body: Record<string, unknown> | null) => { status?: number; json: unknown }) {
+function stubFetch(respond: (url: string, body: Record<string, unknown> | null) => { status?: number; json: unknown; headers?: Record<string, string> }) {
   const calls: Captured[] = [];
   const fn = (async (input: string | URL | Request, init?: RequestInit) => {
     const url = String(input);
@@ -22,7 +22,7 @@ function stubFetch(respond: (url: string, body: Record<string, unknown> | null) 
     calls.push({ url, headers: (init?.headers ?? {}) as Record<string, string>, body });
     if (url.endsWith("/models")) return new Response(JSON.stringify(MODELS), { status: 200 });
     const r = respond(url, body);
-    return new Response(JSON.stringify(r.json), { status: r.status ?? 200 });
+    return new Response(JSON.stringify(r.json), { status: r.status ?? 200, ...(r.headers ? { headers: r.headers } : {}) });
   }) as typeof fetch;
   return { fn, calls };
 }
@@ -72,6 +72,34 @@ describe("AiandClient — OpenAI shape", () => {
     const res = await new AiandClient({ apiKey: "k", fetch: fn }).structured<{ ok: boolean }>(REQ);
     expect(res.reportedCostUsd).toBe(0.0123);
     expect(res.data.ok).toBe(false);
+  });
+
+  it("asks for per-request metrics on both shapes and takes the exact cost from X-Cost, next to the estimate", async () => {
+    for (const shape of ["openai", "anthropic"] as const) {
+      const { fn, calls } = stubFetch(() => ({
+        json: shape === "openai"
+          ? { choices: [{ message: { tool_calls: [{ function: { name: "submit", arguments: { ok: true } } }] } }], usage: { prompt_tokens: 1000, completion_tokens: 200, cost: 9 } }
+          : { content: [{ type: "tool_use", name: "submit", input: { ok: true } }], usage: { input_tokens: 1000, output_tokens: 200 } },
+        headers: { "X-Cost": "0.00271", "X-Cost-Currency": "USD" },
+      }));
+      const res = await new AiandClient({ apiKey: "k", fetch: fn, shape }).structured<{ ok: boolean }>(REQ);
+      const call = calls.find((c) => !c.url.endsWith("/models"))!;
+      expect(call.headers["x-aiand-metrics"]).toBe("true");
+      // The header is exact and wins over a body field; the estimate is still recorded.
+      expect(res.reportedCostUsd).toBe(0.00271);
+      expect(res.reportedCost).toEqual({ amount: 0.00271, currency: "USD", source: "x-cost" });
+      expect(res.estimatedCostUsd).toBeGreaterThan(0);
+    }
+  });
+
+  it("keeps a cost in another currency without treating it as USD", async () => {
+    const { fn } = stubFetch(() => ({
+      json: { choices: [{ message: { tool_calls: [{ function: { name: "submit", arguments: { ok: true } } }] } }], usage: { prompt_tokens: 1, completion_tokens: 1 } },
+      headers: { "X-Cost": "0.42", "X-Cost-Currency": "JPY" },
+    }));
+    const res = await new AiandClient({ apiKey: "k", fetch: fn }).structured<{ ok: boolean }>(REQ);
+    expect(res.reportedCost).toEqual({ amount: 0.42, currency: "JPY", source: "x-cost" });
+    expect(res.reportedCostUsd).toBeUndefined();
   });
 
   it("falls back to JSON in the message content", async () => {

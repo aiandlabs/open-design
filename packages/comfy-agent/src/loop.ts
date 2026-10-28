@@ -187,6 +187,8 @@ export type LlmCallTrace = {
   shape: ApiShape;
   usage: TokenUsage;
   reportedCostUsd?: number;
+  /** As the API reported it (X-Cost header or body), in its own currency. */
+  reportedCost?: { amount: number; currency: string; source: "x-cost" | "body" };
   estimatedCostUsd?: number;
   latencyMs: number;
 };
@@ -1095,6 +1097,7 @@ function callTrace(role: "planner" | "critic", r: StructuredResult<unknown>): Ll
     usage: r.usage,
     latencyMs: r.latencyMs,
     ...(r.reportedCostUsd === undefined ? {} : { reportedCostUsd: r.reportedCostUsd }),
+    ...(r.reportedCost ? { reportedCost: r.reportedCost } : {}),
     ...(r.estimatedCostUsd === undefined ? {} : { estimatedCostUsd: r.estimatedCostUsd }),
   };
 }
