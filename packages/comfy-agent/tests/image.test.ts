@@ -6,10 +6,12 @@ import {
   compositeOver,
   coverToSize,
   createImage,
+  cutoutSheet,
   decodePng,
   encodePng,
   estimateKeyColor,
   isPng,
+  keyResidue,
   parseHexColor,
   pngSize,
   rectMask,
@@ -157,5 +159,38 @@ describe("masks and colours", () => {
     expect(parseHexColor("#ff00FF")).toEqual({ r: 255, g: 0, b: 255 });
     expect(toHexColor({ r: 0, g: 255, b: 16 })).toBe("#00ff10");
     expect(() => parseHexColor("green")).toThrow(ImageFormatError);
+  });
+});
+
+describe("cut-out residue", () => {
+  const green = { r: 82, g: 198, b: 101 };
+
+  it("reports a clean cut-out as clean", () => {
+    const img = createImage(20, 20, { r: 0, g: 0, b: 0, a: 0 });
+    for (let y = 5; y < 15; y += 1) for (let x = 5; x < 15; x += 1) img.data.set([220, 30, 40, 255], (y * 20 + x) * 4);
+    expect(keyResidue(img, green)).toEqual({ keyTinted: 0, haze: 0 });
+  });
+
+  it("flags a translucent key-coloured shadow left beside the subject", () => {
+    const img = createImage(20, 20, { r: 0, g: 0, b: 0, a: 0 });
+    for (let y = 5; y < 15; y += 1) for (let x = 5; x < 10; x += 1) img.data.set([220, 30, 40, 255], (y * 20 + x) * 4);
+    for (let y = 5; y < 15; y += 1) for (let x = 10; x < 15; x += 1) img.data.set([80, 190, 100, 120], (y * 20 + x) * 4);
+    const r = keyResidue(img, green);
+    expect(r.keyTinted).toBeCloseTo(0.5);
+    expect(r.haze).toBeCloseTo(0.5);
+  });
+
+  it("ignores pixels that are effectively transparent", () => {
+    const img = createImage(4, 4, { ...green, a: 8 });
+    expect(keyResidue(img, green)).toEqual({ keyTinted: 0, haze: 0 });
+  });
+
+  it("lays the cut-out out on light and dark panels", () => {
+    const img = createImage(64, 10, { r: 0, g: 0, b: 0, a: 0 });
+    const sheet = cutoutSheet(img);
+    expect(sheet.width).toBe(64 * 2 + 4);
+    expect(sheet.height).toBe(10);
+    expect(px(sheet, 0, 0)).toEqual([255, 255, 255, 255]);
+    expect(px(sheet, 64 + 4, 0)).toEqual([24, 24, 24, 255]);
   });
 });

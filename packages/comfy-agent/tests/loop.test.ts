@@ -172,7 +172,12 @@ describe("generateAsset", () => {
     );
     expect(res.trace.stopReason).toBe("all-pass");
     const r1 = res.trace.rounds[0]!;
-    expect(r1.checks.map((c) => [c.id, c.pass])).toEqual([["size", true], ["alpha", true], ["flat_background", true]]);
+    expect(r1.checks.map((c) => [c.id, c.pass])).toEqual([
+      ["size", true],
+      ["alpha", true],
+      ["flat_background", true],
+      ["key_residue", true],
+    ]);
     expect(r1.keyColor).toMatchObject({ requested: "#00FF00", borderMatch: 1 });
     const out = decodePng(res.png);
     expect([out.width, out.height]).toEqual([256, 256]);

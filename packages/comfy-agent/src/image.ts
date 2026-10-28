@@ -401,6 +401,49 @@ export function compositeOver(img: RgbaImage, bg: Rgb): RgbaImage {
   return { width: img.width, height: img.height, data };
 }
 
+/**
+ * Show a cut-out to a vision model on a light and a dark background, side by
+ * side. Residue from keying (tinted shadows, haze, halos) is easy to miss on a
+ * single mid-grey background but stands out against at least one of these.
+ */
+export function cutoutSheet(img: RgbaImage, light: Rgb = { r: 255, g: 255, b: 255 }, dark: Rgb = { r: 24, g: 24, b: 24 }): RgbaImage {
+  const gap = Math.max(4, Math.round(img.width / 64));
+  const sheet = createImage(img.width * 2 + gap, img.height, { r: 255, g: 0, b: 255, a: 255 });
+  for (const [i, panel] of [compositeOver(img, light), compositeOver(img, dark)].entries()) {
+    const x0 = i * (img.width + gap);
+    for (let y = 0; y < img.height; y += 1) {
+      sheet.data.set(panel.data.subarray(y * img.width * 4, (y + 1) * img.width * 4), (y * sheet.width + x0) * 4);
+    }
+  }
+  return sheet;
+}
+
+export type KeyResidue = {
+  /** Fraction of visible pixels (alpha ≥ 16) whose colour is still near the key. */
+  keyTinted: number;
+  /** Fraction of visible pixels that are partly transparent (16 ≤ alpha < 224). */
+  haze: number;
+};
+
+/**
+ * Measure what chroma keying left behind. A clean cut-out has almost no
+ * visible pixels near the key colour, and partial alpha only in a thin edge
+ * band; a model-painted drop shadow on the key colour shows up in both.
+ */
+export function keyResidue(img: RgbaImage, key: Rgb, maxDistance = 0.22): KeyResidue {
+  let visible = 0;
+  let tinted = 0;
+  let partial = 0;
+  for (let i = 0; i < img.data.length; i += 4) {
+    const a = img.data[i + 3]!;
+    if (a < 16) continue;
+    visible += 1;
+    if (a < 224) partial += 1;
+    if (colorDistance({ r: img.data[i]!, g: img.data[i + 1]!, b: img.data[i + 2]! }, key) <= maxDistance) tinted += 1;
+  }
+  return visible ? { keyTinted: tinted / visible, haze: partial / visible } : { keyTinted: 0, haze: 0 };
+}
+
 export type NormalizedRect = { x: number; y: number; width: number; height: number };
 
 /**

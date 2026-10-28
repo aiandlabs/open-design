@@ -23,12 +23,13 @@ import {
 import {
   alphaStats,
   chromaKey,
-  compositeOver,
   coverToSize,
+  cutoutSheet,
   decodePng,
   encodePng,
   estimateKeyColor,
   fitWithin,
+  keyResidue,
   parseHexColor,
   rectMask,
   toHexColor,
@@ -385,7 +386,7 @@ export async function generateAsset(request: AssetRequest, options: AssetLoopOpt
 
     // 4. Critic.
     const tc = Date.now();
-    const criticView = encodePng(fitWithin(request.transparent ? compositeOver(post.image, { r: 128, g: 128, b: 128 }) : post.image, 768));
+    const criticView = encodePng(fitWithin(request.transparent ? cutoutSheet(post.image) : post.image, request.transparent ? 1024 : 768));
     try {
       log(`round ${round}: grading with ${criticModel}`);
       const grade = async (reminder: string) => {
@@ -570,6 +571,13 @@ export function postProcess(
   return { image: coverToSize(raw, request.width, request.height) };
 }
 
+// A clean cut-out keeps partial alpha to a thin edge band and has almost no
+// visible key-coloured pixels. Calibrated on six live SDXL lantern rounds:
+// the bad rounds measured 1.7–30% tinted or 12–45% haze; the clean one
+// measured 0.4% and 4.7%.
+const KEY_RESIDUE_MAX_TINTED = 0.01;
+const KEY_RESIDUE_MAX_HAZE = 0.08;
+
 export function deterministicChecks(
   img: RgbaImage,
   request: AssetRequest,
@@ -594,6 +602,15 @@ export function deterministicChecks(
         id: "flat_background",
         pass: key.borderMatch >= 0.6,
         detail: `${(key.borderMatch * 100).toFixed(0)}% of border pixels near key ${key.requested} (measured ${key.measured})`,
+      });
+      const residue = keyResidue(img, parseHexColor(key.measured));
+      checks.push({
+        id: "key_residue",
+        pass: residue.keyTinted <= KEY_RESIDUE_MAX_TINTED && residue.haze <= KEY_RESIDUE_MAX_HAZE,
+        detail:
+          `${(residue.keyTinted * 100).toFixed(1)}% of visible pixels still near the key colour (max ${KEY_RESIDUE_MAX_TINTED * 100}%), ` +
+          `${(residue.haze * 100).toFixed(1)}% partly transparent (max ${KEY_RESIDUE_MAX_HAZE * 100}%); ` +
+          "high values mean a shadow, glow or haze was painted on the background",
       });
     }
   }
@@ -713,7 +730,10 @@ function planUserText(
 function criticUserText(checklist: ChecklistItem[], request: AssetRequest): string {
   return [
     `Original request: ${request.prompt}`,
-    request.transparent ? "This is a cut-out asset: mid-grey areas are transparent." : "",
+    request.transparent
+      ? "This is a cut-out asset, shown twice: on white (left) and on near-black (right). Those backgrounds are transparent. " +
+        "A visible shadow, glow, tint, haze or coloured fringe around the subject on either side is a defect: fail any item it affects."
+      : "",
     "Checklist:",
     ...checklist.map((c) => `- ${c.id}: ${c.text}`),
     `Grade every item by id and call ${CRITIC_TOOL}.`,
