@@ -1,4 +1,5 @@
 // @ts-nocheck
+import { odNextAdvertisedSkillRoots } from './strategies/od-next/advertised-skill-roots.js';
 import { observeDiscoveryEvent } from './strategies/od-next/discovery-observation.js';
 import { assertCommentFileNotPending } from './collab/comment-file-retirements.js';
 import { captureJsonBodySize } from './http/json-body-size.js';
@@ -12447,6 +12448,7 @@ export async function startServer({
       ...(odNextTaskInputSnapshot
         ? [odNextTaskInputSnapshot.projectionAccessRoot]
         : []),
+      ...odNextAdvertisedSkillRoots(strategyTaskAtStart?.promptBundle.text, BUNDLED_PLUGINS_DIR),
     ];
     const researchCommandContract = resolveResearchCommandContract(
       research,
