@@ -15,13 +15,14 @@ import path from "node:path";
 import { parseArgs } from "node:util";
 
 import { ComfyClient } from "../../src/client.js";
+import { chooseCheckpoint } from "../../src/graphs.js";
 import { resolveComfyAgentConfig, parseApiShape } from "../../src/config.js";
 import { AiandClient, type ApiShape } from "../../src/llm.js";
 import { runArm } from "./arms.js";
-import { DEFAULT_JUDGE2_MODEL, DEFAULT_JUDGE_MODEL, judgeImage, judgeView } from "./judge.js";
+import { JUDGE2_PREFERENCES, JUDGE_PREFERENCES, judgeImage, judgeView, modelFamily, selectJudgeModel } from "./judge.js";
 import { ARMS, appendResult, judgesToRedo, pendingJobs, readResults, type Arm, type Job, type ResultRow } from "./results.js";
 import { writeReports } from "./report.js";
-import { comfyTiming } from "./timing.js";
+import { checkpointOf, comfyTiming, foreignCheckpoints, llmModelsOf } from "./timing.js";
 import { DEFAULT_RELIABILITY_SUBSET, loadTasks, selectTasks, TASKS_PATH, type EvalTask } from "./tasks.js";
 
 const HELP = `Usage: eval:design-assets --out <dir> [options]
@@ -32,18 +33,22 @@ const HELP = `Usage: eval:design-assets --out <dir> [options]
   --arms raw,plan,loop    arms to run (default all three)
   --seeds 1,2             seeds; every arm uses the same seeds (default 1)
   --max-rounds <n>        rounds for the loop arm (default 4)
-  --judge <model>         judge model (default ${DEFAULT_JUDGE_MODEL})
-  --judge2 <model|none>   second judge on the reliability subset (default ${DEFAULT_JUDGE2_MODEL})
+  --judge <model>         judge model; default: picked from the ai& catalog, preferring
+                          ${JUDGE_PREFERENCES.join(", ")}, never from the planner's or critic's family
+  --judge2 <model|none>   second judge on the reliability subset; default: picked the same way,
+                          preferring ${JUDGE2_PREFERENCES.join(", ")}, also not the first judge's family
   --subset id,id          reliability subset (default ${DEFAULT_RELIABILITY_SUBSET.join(",")})
   --shape openai|anthropic  API shape for planner, critic and judges (default from COMFY_AGENT_API_SHAPE, else openai)
-  --planner <model>       planner model (default from config)
-  --critic <model>        critic model (default from config)
+  --planner <model>       planner model (default: config, else picked from the ai& catalog)
+  --critic <model>        critic model (default: config, else picked from the ai& catalog)
   --task-timeout-min <n>  deadline per task x arm (default 25)
   --judge-concurrency <n> judge calls in flight while the next image generates (default 4)
   --retry-failed          rerun rows whose generation failed
   --rerun-stop-reasons r,r  rerun rows whose loop stopped for these reasons (e.g. time-limit,
                           after other clients kept the shared ComfyUI busy)
   --report-only           only rebuild summary and contact sheets from results.jsonl
+  --allow-mixed-models    resume a run even though the server default image model, or the
+                          planner, critic or judges the catalog picks, changed since it started
   --tasks-file <path>     task set (default evals/design-assets/tasks.json)
 `;
 
@@ -89,6 +94,7 @@ async function main(): Promise<void> {
       "retry-failed": { type: "boolean" },
       "rerun-stop-reasons": { type: "string" },
       "report-only": { type: "boolean" },
+      "allow-mixed-models": { type: "boolean" },
       "tasks-file": { type: "string" },
       help: { type: "boolean" },
     },
@@ -114,8 +120,6 @@ async function main(): Promise<void> {
     return n;
   });
   const subset = new Set(list(values.subset) ?? DEFAULT_RELIABILITY_SUBSET);
-  const judgeModel = values.judge ?? DEFAULT_JUDGE_MODEL;
-  const judge2Model = values.judge2 === "none" ? undefined : (values.judge2 ?? DEFAULT_JUDGE2_MODEL);
 
   if (!values["report-only"]) {
     const shapeFlag = values.shape ? parseApiShape(values.shape) : undefined;
@@ -129,6 +133,26 @@ async function main(): Promise<void> {
     const comfy = new ComfyClient({ baseUrl: cfg.comfyUrl });
     const llm = new AiandClient({ ...(cfg.aiandApiKey ? { apiKey: cfg.aiandApiKey } : {}), baseUrl: cfg.aiandBaseUrl, shape });
     await comfy.getObjectInfo();
+
+    // Resolve every model once against the live ai& catalog, so all tasks and
+    // arms use the same ids. Judges come from families the judged models do not use.
+    const plannerModel = await llm.resolveModel("planner", cfg.plannerModel);
+    const criticModel = await llm.resolveModel("critic", cfg.criticModel);
+    const catalog = await llm.catalog.list();
+    const familyOf = (id: string) => modelFamily(id, catalog.find((m) => m.id === id)?.provider);
+    const judgeModel = selectJudgeModel(catalog, {
+      ...(values.judge ? { configured: values.judge } : {}),
+      preferred: JUDGE_PREFERENCES,
+      excludeFamilies: [familyOf(plannerModel), familyOf(criticModel)],
+    });
+    const judge2Model =
+      values.judge2 === "none"
+        ? undefined
+        : selectJudgeModel(catalog, {
+            ...(values.judge2 ? { configured: values.judge2 } : {}),
+            preferred: JUDGE2_PREFERENCES,
+            excludeFamilies: [familyOf(plannerModel), familyOf(criticModel), familyOf(judgeModel)],
+          });
     const timeoutMs = Number(values["task-timeout-min"] ?? 25) * 60 * 1000;
     const maxRounds = Number(values["max-rounds"] ?? 4);
     if (!Number.isInteger(maxRounds) || maxRounds < 1) throw new Error("--max-rounds must be a positive integer");
@@ -164,20 +188,49 @@ async function main(): Promise<void> {
         })
         .then(write);
 
-    log(`config: planner ${cfg.plannerModel}, critic ${cfg.criticModel}, judge ${judgeModel}, judge2 ${judge2Model ?? "none"}, shape ${shape}, comfy ${cfg.comfyUrl}`);
+    log(`config: planner ${plannerModel}, critic ${criticModel}, judge ${judgeModel}, judge2 ${judge2Model ?? "none"}, shape ${shape}, comfy ${cfg.comfyUrl}`);
 
-    // Rows that already have an image: fill in ComfyUI execution time from the
-    // server history if it is missing, and redo missing or failed grades.
+    // A resumed run must keep the models it started with; otherwise the
+    // comparison would be between models, not arms. Refuse to mix unless asked.
     const existing = await readResults(resultsFile);
+    const checkpoint = chooseCheckpoint(await comfy.getObjectInfo());
+    const existingCheckpoints = await Promise.all(existing.filter((r) => r.status === "ok").map((r) => checkpointOf(r)));
+    const existingLlms = await Promise.all(existing.filter((r) => r.status === "ok").map((r) => llmModelsOf(r)));
+    const mixed = [
+      ["image model", foreignCheckpoints(existingCheckpoints, checkpoint), checkpoint],
+      ["planner", foreignCheckpoints(existingLlms.map((m) => m?.planner), plannerModel), plannerModel],
+      ["critic", foreignCheckpoints(existingLlms.map((m) => m?.critic), criticModel), criticModel],
+      ["judge", foreignCheckpoints(existing.map((r) => r.judge?.model), judgeModel), judgeModel],
+      ["second judge", judge2Model ? foreignCheckpoints(existing.map((r) => r.judge2?.model), judge2Model) : [], judge2Model ?? ""],
+    ] as const;
+    const conflicts = mixed.filter(([, found]) => found.length > 0).map(([what, found, now]) => `${what}: run has ${found.join(", ")}, now ${now}`);
+    if (conflicts.length) {
+      if (!values["allow-mixed-models"]) {
+        throw new Error(`${outDir} was started with other models (${conflicts.join("; ")}). Use a new --out, or pass --allow-mixed-models.`);
+      }
+      log(`warning: mixing models in one run: ${conflicts.join("; ")}`);
+    }
+    log(`image model (server default checkpoint): ${checkpoint}`);
+
+    // Rows that already have an image: fill in the checkpoint and ComfyUI
+    // execution time if missing, and redo missing or failed grades.
     const inFlight: Promise<void>[] = [];
     const selected = new Set(tasks.map((t) => t.id));
     for (const row of existing) {
       if (!selected.has(row.taskId)) continue;
       const timing = row.status === "ok" && row.comfyExecMs === undefined ? await comfyTiming(comfy, row) : undefined;
-      const current = timing ? { ...row, ...timing } : row;
+      const rowCheckpoint = row.status === "ok" && !row.checkpoint ? await checkpointOf(row) : undefined;
+      const rowModels = row.status === "ok" && !row.models ? await llmModelsOf(row) : undefined;
+      const changed = Boolean(timing || rowCheckpoint || rowModels);
+      const current: ResultRow = {
+        ...row,
+        ...(timing ?? {}),
+        ...(rowCheckpoint ? { checkpoint: rowCheckpoint } : {}),
+        ...(rowModels ? { models: rowModels } : {}),
+      };
       const redo = judgesToRedo(current, subset.has(row.taskId), Boolean(judge2Model));
       if (redo.length) inFlight.push(gradeAndWrite(current, redo));
-      else if (timing) await write(current);
+      else if (changed) await write(current);
     }
 
     const rerunStopReasons = list(values["rerun-stop-reasons"]) ?? [];
@@ -200,8 +253,8 @@ async function main(): Promise<void> {
       const out = await runArm(job.arm, task, job.seed, {
         comfy,
         llm,
-        plannerModel: cfg.plannerModel,
-        criticModel: cfg.criticModel,
+        plannerModel,
+        criticModel,
         shape,
         ...(cfg.plannerReasoningEffort ? { plannerReasoningEffort: cfg.plannerReasoningEffort } : {}),
         ...(cfg.criticReasoningEffort ? { criticReasoningEffort: cfg.criticReasoningEffort } : {}),

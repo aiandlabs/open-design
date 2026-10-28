@@ -7,9 +7,20 @@ import { loadThumbs, renderContactSheet, renderJudgeSheet } from "./html.js";
 import { ARMS, type ResultRow } from "./results.js";
 import { renderSummaryMarkdown, summarize } from "./summary.js";
 import type { EvalTask } from "./tasks.js";
+import { checkpointOf, llmModelsOf } from "./timing.js";
 
 export async function writeReports(outDir: string, tasks: EvalTask[], rows: ResultRow[]): Promise<string[]> {
-  const ordered = rows.slice().sort((a, b) => a.taskId.localeCompare(b.taskId) || ARMS.indexOf(a.arm) - ARMS.indexOf(b.arm) || a.seed - b.seed);
+  // Rows written before rows carried their models get them from their trace,
+  // so the summary always records the image model, planner and critic.
+  const filled = await Promise.all(
+    rows.map(async (r) => {
+      if (r.status !== "ok") return r;
+      const checkpoint = r.checkpoint ?? (await checkpointOf(r));
+      const models = r.models ?? (await llmModelsOf(r));
+      return { ...r, ...(checkpoint ? { checkpoint } : {}), ...(models ? { models } : {}) };
+    }),
+  );
+  const ordered = filled.sort((a, b) => a.taskId.localeCompare(b.taskId) || ARMS.indexOf(a.arm) - ARMS.indexOf(b.arm) || a.seed - b.seed);
   const summary = summarize(ordered);
   await writeFile(path.join(outDir, "summary.json"), `${JSON.stringify(summary, null, 2)}\n`);
   await writeFile(path.join(outDir, "summary.md"), renderSummaryMarkdown(summary));

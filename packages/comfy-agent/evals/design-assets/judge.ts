@@ -5,12 +5,51 @@
 
 import { cutoutSheet, encodePng, fitWithin, type RgbaImage } from "../../src/image.js";
 import type { AiandClient, ApiShape, JsonSchema, StructuredResult } from "../../src/llm.js";
+import { selectModel, type AiandModel } from "../../src/models.js";
 import { normalizeCriticItems } from "../../src/prompts.js";
 import type { JudgeResult, JudgedItem } from "./results.js";
 import { checklistIds, type EvalTask } from "./tasks.js";
 
-export const DEFAULT_JUDGE_MODEL = "google/gemma-4-31b-it";
-export const DEFAULT_JUDGE2_MODEL = "qwen/qwen3.8-27b";
+/**
+ * Ranking hints only, like the loop's role preferences: a listed id is used
+ * when the live catalog offers it with vision and tool calling, is not
+ * deprecated, and is from a family the planner and critic do not use.
+ */
+export const JUDGE_PREFERENCES: readonly string[] = ["google/gemma-4-31b-it"];
+export const JUDGE2_PREFERENCES: readonly string[] = ["qwen/qwen3.8-27b"];
+export const JUDGE_CAPABILITIES: readonly string[] = ["vision", "tool_calling"];
+
+/** Model family: the provider the catalog reports, else the id's namespace ("google/gemma-…" → "google"). */
+export function modelFamily(id: string, provider?: string): string {
+  return (provider?.trim() || (id.includes("/") ? id.slice(0, id.indexOf("/")) : id)).toLowerCase();
+}
+
+/**
+ * Pick a judge from the live catalog. It must be independent of the models
+ * it judges: every model from an excluded family (the planner's, the
+ * critic's, and for the second judge the first judge's) is out. A configured
+ * id from an excluded family is refused rather than silently replaced.
+ */
+export function selectJudgeModel(
+  models: readonly AiandModel[],
+  input: { configured?: string; preferred: readonly string[]; excludeFamilies: readonly string[]; now?: number },
+): string {
+  const excluded = new Set(input.excludeFamilies.map((f) => f.toLowerCase()));
+  const familyOf = (id: string) => modelFamily(id, models.find((m) => m.id === id)?.provider);
+  if (input.configured && excluded.has(familyOf(input.configured))) {
+    throw new Error(`judge ${input.configured} is from the ${familyOf(input.configured)} family, which a judged or other judge model also uses; pick a model from another family`);
+  }
+  return selectModel(
+    models.filter((m) => !excluded.has(modelFamily(m.id, m.provider))),
+    {
+      role: "critic",
+      capabilities: JUDGE_CAPABILITIES,
+      preferred: input.preferred,
+      ...(input.configured ? { configured: input.configured } : {}),
+      ...(input.now === undefined ? {} : { now: input.now }),
+    },
+  );
+}
 
 export const JUDGE_TOOL = "submit_judgement";
 

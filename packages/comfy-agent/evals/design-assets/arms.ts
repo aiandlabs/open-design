@@ -23,6 +23,7 @@ export const RAW_KEY_COLOR = "#00FF00";
 export type ArmContext = {
   comfy: ComfyClient;
   llm: AiandClient;
+  /** Already resolved against the ai& catalog, so every arm and task uses the same ids. */
   plannerModel: string;
   criticModel: string;
   shape: ApiShape;
@@ -124,7 +125,7 @@ async function runRaw(task: EvalTask, seed: number, ctx: ArmContext, signal: Abo
     JSON.stringify({ arm: "raw", request: req, checkpoint, generationSize: gen, sampling, keyColor: post.key, graph: doc.graph, promptId: run.promptId, comfyMs, wallMs, checks }, null, 2),
   );
   return {
-    row: { ...baseRow(task, "raw", seed), status: "ok", rounds: 1, stopReason: "single-shot", wallMs, comfyMs, promptIds: [run.promptId], checks, imagePath, tracePath },
+    row: { ...baseRow(task, "raw", seed), status: "ok", rounds: 1, stopReason: "single-shot", wallMs, comfyMs, promptIds: [run.promptId], checkpoint, checks, imagePath, tracePath },
     image: post.image,
   };
 }
@@ -159,6 +160,8 @@ async function runLoop(arm: "plan" | "loop", task: EvalTask, seed: number, ctx: 
     row: {
       ...baseRow(task, arm, seed),
       status: "ok",
+      checkpoint: res.trace.server.checkpoint,
+      models: { planner: res.trace.models.planner, critic: res.trace.models.critic },
       rounds: res.trace.rounds.length,
       stopReason: res.trace.stopReason,
       wallMs: Date.now() - started,

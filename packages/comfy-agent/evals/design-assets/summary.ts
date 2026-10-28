@@ -184,12 +184,43 @@ export function judgeAgreement(rows: ResultRow[]): JudgeAgreementReport {
   };
 }
 
+/** Count of rows per model id, most used first. */
+export type ModelUse = { id: string; rows: number }[];
+
+export type ModelsReport = {
+  /** ComfyUI checkpoints the arms generated with (the server default unless a task names one). */
+  imageModel: (ModelUse[number] & { arms: Arm[] })[];
+  planner: ModelUse;
+  critic: ModelUse;
+  judge: ModelUse;
+  judge2: ModelUse;
+};
+
+export function modelsReport(rows: ResultRow[]): ModelsReport {
+  const count = (ids: (string | undefined)[]): ModelUse => {
+    const m = new Map<string, number>();
+    for (const id of ids) if (id) m.set(id, (m.get(id) ?? 0) + 1);
+    return [...m].map(([id, n]) => ({ id, rows: n })).sort((a, b) => b.rows - a.rows || a.id.localeCompare(b.id));
+  };
+  return {
+    imageModel: count(rows.map((r) => r.checkpoint)).map((u) => ({
+      ...u,
+      arms: ARMS.filter((a) => rows.some((r) => r.arm === a && r.checkpoint === u.id)),
+    })),
+    planner: count(rows.map((r) => r.models?.planner)),
+    critic: count(rows.map((r) => r.models?.critic)),
+    judge: count(rows.map((r) => r.judge?.model)),
+    judge2: count(rows.map((r) => r.judge2?.model)),
+  };
+}
+
 export type Summary = {
   generatedAt: string;
   rows: number;
   tasks: number;
   arms: Arm[];
   seeds: number[];
+  models: ModelsReport;
   perArm: ArmStats[];
   perGroup: { group: string; perArm: ArmStats[] }[];
   paired: PairedReport[];
@@ -218,6 +249,7 @@ export function summarize(rows: ResultRow[], now = new Date()): Summary {
     tasks: new Set(rows.map((r) => r.taskId)).size,
     arms,
     seeds: [...new Set(rows.map((r) => r.seed))].sort((a, b) => a - b),
+    models: modelsReport(rows),
     perArm: arms.map((a) => armStats(a, rows)),
     perGroup: groups.map((g) => ({ group: g, perArm: arms.map((a) => armStats(a, rows.filter((r) => r.group === g))) })),
     paired,
@@ -249,6 +281,8 @@ function armTable(stats: ArmStats[]): string[] {
   ];
 }
 
+const uses = (u: ModelUse) => (u.length === 0 ? "–" : u.length === 1 ? u[0]!.id : u.map((x) => `${x.id} (${x.rows} rows)`).join(", "));
+
 const kappaCell = (a: Agreement) => `${a.n} | ${pct(a.po)} | ${a.kappa === null ? "undefined" : a.kappa.toFixed(3)}`;
 
 export function renderSummaryMarkdown(s: Summary): string {
@@ -256,7 +290,8 @@ export function renderSummaryMarkdown(s: Summary): string {
     "# Design-asset eval: summary",
     "",
     `Generated ${s.generatedAt}. ${s.rows} rows, ${s.tasks} tasks, arms ${s.arms.map((a) => ARM_LABEL[a]).join(", ")}, seeds ${s.seeds.join(", ")}.`,
-    `Judge: ${s.judgeAgreement.judge ?? "–"}. Second judge (reliability subset): ${s.judgeAgreement.judge2 ?? "–"}.`,
+    `Image model (ComfyUI checkpoint): ${uses(s.models.imageModel)}. Planner: ${uses(s.models.planner)}. Critic: ${uses(s.models.critic)}. ` +
+      `Judge: ${uses(s.models.judge)}. Second judge (reliability subset): ${uses(s.models.judge2)}.`,
     "",
     "Definitions: *item pass* is the share of the task's 5 fixed checklist items the judge passed. *Full pass* is all 5 items plus the code checks " +
       "(exact size; alpha and key residue when the task needs transparency). A generation error scores 0 and no full pass; a row the judge could not grade is left out. " +

@@ -1,14 +1,14 @@
 // Unit tests for the design-asset eval: scoring, statistics, resumability,
 // aggregation and report rendering. Stub data only; no live services.
 
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
 import { renderContactSheet, renderJudgeSheet } from "../evals/design-assets/html.js";
-import { alignJudgement, JUDGE_TOOL, judgeImage, judgeUserText, CUTOUT_EXPLANATION } from "../evals/design-assets/judge.js";
+import { alignJudgement, JUDGE_TOOL, judgeImage, judgeUserText, CUTOUT_EXPLANATION, modelFamily, selectJudgeModel } from "../evals/design-assets/judge.js";
 import { writeReports } from "../evals/design-assets/report.js";
 import {
   appendResult,
@@ -22,10 +22,12 @@ import {
   type ResultRow,
 } from "../evals/design-assets/results.js";
 import { bootstrapMeanCi, cohensKappa, comparePaired, median, quantile, signTest } from "../evals/design-assets/stats.js";
-import { armStats, judgeAgreement, pairedReport, renderSummaryMarkdown, scoreRow, summarize } from "../evals/design-assets/summary.js";
-import { executionMs } from "../evals/design-assets/timing.js";
+import { armStats, judgeAgreement, modelsReport, pairedReport, renderSummaryMarkdown, scoreRow, summarize } from "../evals/design-assets/summary.js";
+import { checkpointOf, executionMs, foreignCheckpoints, llmModelsOf } from "../evals/design-assets/timing.js";
 import { DEFAULT_RELIABILITY_SUBSET, loadTasks, parseTasks, selectTasks, type EvalTask } from "../evals/design-assets/tasks.js";
 import { AiandClient } from "../src/llm.js";
+import { ModelSelectionError } from "../src/errors.js";
+import type { AiandModel } from "../src/models.js";
 
 const cleanups: (() => Promise<void>)[] = [];
 afterEach(async () => {
@@ -327,6 +329,80 @@ describe("scoring and aggregation", () => {
     for (const h of ["## Per arm", "## Per group", "### hero", "## Paired comparisons", "## Judge agreement", "## Errors"]) expect(md).toContain(h);
     expect(md).toContain("| C loop vs A raw | item pass rate | 3 | 2 | 0 | 1 |");
     expect(md).toContain("| A raw | 3 | 3 | 0 | 0 | 33.3% |");
+  });
+});
+
+describe("judge model selection", () => {
+  const m = (id: string, capabilities = ["vision", "tool_calling"], extra: Partial<AiandModel> = {}): AiandModel => ({ id, capabilities, reasoningEfforts: [], ...extra });
+  const catalog = [
+    m("moonshotai/kimi-k3"),
+    m("zai-org/glm-5.3-flash"),
+    m("zai-org/glm-5.3", ["reasoning", "tool_calling"]),
+    m("qwen/qwen3.8-27b"),
+    m("google/gemma-4-31b-it"),
+    m("google/gemma-old", ["vision", "tool_calling"], { deprecationDate: "2020-01-01" }),
+  ];
+  const exclude = ["moonshotai", "zai-org"];
+
+  it("takes the preferred judge when the catalog offers it from an independent family", () => {
+    expect(selectJudgeModel(catalog, { preferred: ["google/gemma-4-31b-it"], excludeFamilies: exclude })).toBe("google/gemma-4-31b-it");
+  });
+
+  it("never picks a model from the planner's or critic's family, even as a fallback", () => {
+    const picked = selectJudgeModel(catalog, { preferred: ["zai-org/glm-5.3-flash", "nobody/missing"], excludeFamilies: exclude });
+    expect(["qwen/qwen3.8-27b", "google/gemma-4-31b-it"]).toContain(picked);
+  });
+
+  it("picks a second judge outside the first judge's family too", () => {
+    expect(selectJudgeModel(catalog, { preferred: ["google/gemma-4-31b-it"], excludeFamilies: [...exclude, "google"] })).toBe("qwen/qwen3.8-27b");
+  });
+
+  it("refuses a configured judge from an excluded family, and validates others against the catalog", () => {
+    expect(() => selectJudgeModel(catalog, { configured: "zai-org/glm-5.3-flash", preferred: [], excludeFamilies: exclude })).toThrow(/family/);
+    expect(() => selectJudgeModel(catalog, { configured: "google/gemma-old", preferred: [], excludeFamilies: exclude })).toThrow(ModelSelectionError);
+    expect(() => selectJudgeModel(catalog, { preferred: [], excludeFamilies: ["moonshotai", "zai-org", "qwen", "google"] })).toThrow(ModelSelectionError);
+  });
+
+  it("reads the family from the provider field, else the id namespace", () => {
+    expect(modelFamily("google/gemma-4-31b-it")).toBe("google");
+    expect(modelFamily("gemma-local", "Google")).toBe("google");
+    expect(modelFamily("plain")).toBe("plain");
+  });
+});
+
+describe("model consistency across a resumed run", () => {
+  it("lists image models in the run that differ from the current default", () => {
+    expect(foreignCheckpoints(["sd_xl_base_1.0.safetensors", undefined, "sd_xl_base_1.0.safetensors"], "sd_xl_base_1.0.safetensors")).toEqual([]);
+    expect(foreignCheckpoints(["sd_xl_base_1.0.safetensors", "flux2-klein.safetensors"], "flux2-klein.safetensors")).toEqual(["sd_xl_base_1.0.safetensors"]);
+  });
+
+  it("recovers the checkpoint of an older row from its raw or loop trace", async () => {
+    const dir = await tempDir();
+    const rawTrace = path.join(dir, "raw.json");
+    const loopTrace = path.join(dir, "loop.json");
+    await writeFile(rawTrace, JSON.stringify({ checkpoint: "a.safetensors" }));
+    await writeFile(loopTrace, JSON.stringify({ server: { checkpoint: "b.safetensors" }, models: { planner: "p/one", critic: "c/one" } }));
+    expect(await llmModelsOf(row({ arm: "loop", tracePath: loopTrace }))).toEqual({ planner: "p/one", critic: "c/one" });
+    expect(await llmModelsOf(row({ arm: "raw", tracePath: rawTrace }))).toBeUndefined();
+    expect(await checkpointOf(row({ arm: "raw", tracePath: rawTrace }))).toBe("a.safetensors");
+    expect(await checkpointOf(row({ arm: "loop", tracePath: loopTrace }))).toBe("b.safetensors");
+    expect(await checkpointOf(row({ arm: "loop", checkpoint: "c.safetensors", tracePath: loopTrace }))).toBe("c.safetensors");
+    expect(await checkpointOf(row({ arm: "loop", tracePath: path.join(dir, "missing.json") }))).toBeUndefined();
+  });
+
+  it("records the image model and the LLM models in the summary", () => {
+    const rows = [
+      row({ arm: "raw", passes: ALL, checkpoint: "sd_xl_base_1.0.safetensors" }),
+      row({ arm: "loop", passes: ALL, checkpoint: "sd_xl_base_1.0.safetensors", models: { planner: "p/one", critic: "c/one" }, judge2: judge(ALL, "j/two") }),
+    ];
+    const models = modelsReport(rows);
+    expect(models.imageModel).toEqual([{ id: "sd_xl_base_1.0.safetensors", rows: 2, arms: ["raw", "loop"] }]);
+    expect(models.planner).toEqual([{ id: "p/one", rows: 1 }]);
+    expect(models.judge).toEqual([{ id: "j/one", rows: 2 }]);
+    expect(models.judge2).toEqual([{ id: "j/two", rows: 1 }]);
+    const s = summarize(rows);
+    expect(s.models.imageModel[0]!.id).toBe("sd_xl_base_1.0.safetensors");
+    expect(renderSummaryMarkdown(s)).toContain("Image model (ComfyUI checkpoint): sd_xl_base_1.0.safetensors. Planner: p/one. Critic: c/one. Judge: j/one.");
   });
 });
 

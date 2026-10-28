@@ -36,6 +36,10 @@ export type ResultRow = {
   height: number;
   status: "ok" | "error";
   error?: RowError;
+  /** ComfyUI checkpoint (image model) the arm generated with. */
+  checkpoint?: string;
+  /** Planner and critic the arm used (absent for raw, which uses neither). */
+  models?: { planner: string; critic: string };
   /** Rounds of generation (1 for raw and plan). */
   rounds: number;
   stopReason?: string;

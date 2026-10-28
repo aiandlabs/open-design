@@ -49,3 +49,37 @@ export async function comfyTiming(comfy: ComfyClient, row: ResultRow): Promise<P
   }
   return { promptIds: ids, comfyExecMs: exec, comfyQueueMs: Math.max(0, row.comfyMs - exec) };
 }
+
+/** The checkpoint a row generated with, from the row or its trace (raw: `checkpoint`; plan/loop: `server.checkpoint`). */
+export async function checkpointOf(row: ResultRow): Promise<string | undefined> {
+  if (row.checkpoint) return row.checkpoint;
+  if (!row.tracePath) return undefined;
+  try {
+    const trace = JSON.parse(await readFile(row.tracePath, "utf8")) as { checkpoint?: unknown; server?: { checkpoint?: unknown } };
+    const c = trace.checkpoint ?? trace.server?.checkpoint;
+    return typeof c === "string" && c ? c : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Planner and critic of a plan/loop row, from the row or its trace (`models`). Raw rows use neither. */
+export async function llmModelsOf(row: ResultRow): Promise<ResultRow["models"]> {
+  if (row.models) return row.models;
+  if (row.arm === "raw" || !row.tracePath) return undefined;
+  try {
+    const trace = JSON.parse(await readFile(row.tracePath, "utf8")) as { models?: { planner?: unknown; critic?: unknown } };
+    const { planner, critic } = trace.models ?? {};
+    return typeof planner === "string" && typeof critic === "string" ? { planner, critic } : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Image models already in a run that differ from the one new rows would use.
+ * A run that mixes image models compares models, not arms.
+ */
+export function foreignCheckpoints(existing: readonly (string | undefined)[], current: string): string[] {
+  return [...new Set(existing.filter((c): c is string => Boolean(c) && c !== current))];
+}
