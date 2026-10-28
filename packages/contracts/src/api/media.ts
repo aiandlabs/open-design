@@ -157,6 +157,12 @@ const MEDIA_FAILURE_NEXT_STEP_BY_CODE: Readonly<Record<string, MediaFailureNextS
   // The run allows media but not THIS model — another allowed one exists.
   MEDIA_MODEL_DENIED: 'switch-model',
   MEDIA_MODEL_UNAVAILABLE: 'switch-model',
+  // Local image generation only (./media-local-policy.ts). A configured
+  // ComfyUI model can take the request; without one the user sets ComfyUI up;
+  // generative video has no local route at all.
+  MEDIA_LOCAL_ONLY_SWITCH_MODEL: 'switch-model',
+  MEDIA_LOCAL_ONLY_SETUP_COMFYUI: 'open-settings',
+  MEDIA_LOCAL_ONLY_VIDEO: 'unsupported',
   // No renderer is wired for the selected model: a Settings problem, whether
   // the fix is a key or a different provider entry.
   STUB_PROVIDER_DISABLED: 'open-settings',

@@ -15,6 +15,10 @@ import {
 } from './deck-framework.js';
 import type { OdNextDeviceFrameContextV2 } from './od-next-device-frame.js';
 import { renderVisualCheckBudgetRule } from './visual-check.js';
+import {
+  renderLocalImageGenerationRule,
+  type LocalImageGenerationPromptInput,
+} from './local-image-generation.js';
 
 import type {
   OdNextPromptBundleHeadV2,
@@ -98,6 +102,16 @@ export interface OdNextStrategyStableRequestContextV2 {
    * legacy charters.
    */
   visualCheckRounds?: number | undefined;
+  /**
+   * Settings → Media providers → "Local image generation only", plus which
+   * local ComfyUI image model is ready. When either is set, filesystem runs
+   * get a `local-image-generation` instruction block that names the local
+   * route (or says there is no image generation). Absent, or policy off with
+   * no ComfyUI, adds no bytes. The rule text has one source,
+   * `renderLocalImageGenerationRule` in `local-image-generation.ts`, shared
+   * with the legacy media contract.
+   */
+  localImageGeneration?: LocalImageGenerationPromptInput | undefined;
   metadata?: object | undefined;
   template?: {
     id?: string | undefined;
@@ -575,6 +589,13 @@ export function composeOdNextStrategyStableRequestContextV2(
     instructionText(
       'visual-check-budget',
       renderVisualCheckBudgetRule(context.visualCheckRounds ?? 0),
+    );
+  }
+  // Same shell requirement: `od media generate` only runs on filesystem runs.
+  if (executionProfile === 'filesystem') {
+    instructionText(
+      'local-image-generation',
+      renderLocalImageGenerationRule(context.localImageGeneration),
     );
   }
   if (context.metadata) {

@@ -44,6 +44,7 @@ import {
   type OdNextStrategyRequestRecipeV2,
 } from './od-next-strategy.js';
 import { SETTINGS_MEDIA_PROVIDERS_PATH } from '../settings-nav.js';
+import type { LocalImageGenerationPromptInput } from './local-image-generation.js';
 import { normalizePromptLocale, promptLanguageName } from './ui-locale.js';
 
 export const BASE_SYSTEM_PROMPT = OFFICIAL_DESIGNER_PROMPT;
@@ -282,6 +283,13 @@ export interface ComposeInput {
    * render-budget rule to replace, so it ignores this.
    */
   visualCheckRounds?: number | undefined;
+  /**
+   * Local image generation policy and ComfyUI readiness. Forwarded across the
+   * OD Next fork only; the API/BYOK legacy stack below cannot run
+   * `od media generate`, and its in-chat media tools are refused by the
+   * daemon when the policy is on.
+   */
+  localImageGeneration?: LocalImageGenerationPromptInput | undefined;
   // Free-form instructions the user set at the global (user-level)
   // settings panel. Injected after personal memory.
   userInstructions?: string | undefined;
@@ -321,6 +329,7 @@ export function composeSystemPrompt({
   freeformDeckSignal,
   deckFrameworkMode,
   visualCheckRounds,
+  localImageGeneration,
   userInstructions,
   projectInstructions,
 }: ComposeInput): string {
@@ -342,6 +351,7 @@ export function composeSystemPrompt({
       deckIntent: odNextStrategyRecipe.taskType !== 'ppt' && freeformDeckSignal === true,
       deckFrameworkMode,
       ...(visualCheckRounds ? { visualCheckRounds } : {}),
+      ...(localImageGeneration ? { localImageGeneration } : {}),
       metadata,
       template,
       designSystemBody,

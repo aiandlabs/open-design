@@ -1,5 +1,6 @@
 import type { OdNextRolloutMode } from './strategy-rollout.js';
 import type { VisualCheckPrefs } from './visual-check.js';
+import type { MediaPolicyPrefs } from './media-local-policy.js';
 
 export interface AgentModelPrefs {
   model?: string;
@@ -100,6 +101,12 @@ export interface AppConfigPrefs {
    * `model` is the ai& vision model the check calls.
    */
   visualCheck?: VisualCheckPrefs | null;
+  /**
+   * Media generation policy. `localOnly` ("Local image generation only")
+   * refuses hosted image and video providers; absent means on. See
+   * `./media-local-policy.ts`.
+   */
+  media?: MediaPolicyPrefs | null;
 }
 
 export interface AppConfigResponse {
