@@ -2008,7 +2008,7 @@ async function runMedia(args) {
     printMediaHelp();
     return;
   }
-  if (sub !== 'generate' && sub !== 'wait' && sub !== 'scaffold' && sub !== 'stock-search' && sub !== 'models') {
+  if (sub !== 'generate' && sub !== 'wait' && sub !== 'scaffold' && sub !== 'stock-search' && sub !== 'models' && sub !== 'policy') {
     console.error(`unknown subcommand: od media ${sub}`);
     printMediaHelp();
     process.exit(1);
@@ -2016,13 +2016,18 @@ async function runMedia(args) {
 
   const idx = args.indexOf(sub);
   const subArgs = [...args.slice(0, idx), ...args.slice(idx + 1)];
+  if (sub === 'policy') return runMediaPolicy(subArgs);
   if (sub === 'models') {
-    const flags = parseFlags(subArgs, { string: ['daemon-url', 'project', 'workspace', 'workspace-member'], boolean: ['json', 'cloud', 'help', 'h'] });
+    const flags = parseFlags(subArgs, { string: ['daemon-url', 'project', 'workspace', 'workspace-member'], boolean: ['json', 'cloud', 'all', 'help', 'h'] });
     if (flags.help || flags.h) { printMediaHelp(); return; }
     const daemonUrl = await cliDaemonUrl(flags);
     const token = process.env.OD_TOOL_TOKEN;
     const query = new URLSearchParams();
     if (flags.cloud) { query.set('cloud', 'true'); query.set('projectId', flags.project || process.env.OD_PROJECT_ID || ''); }
+    // The agent view lists only the image/video models "Local image
+    // generation only" allows, each marked configured/allowed/ready, with
+    // `default` on a ready model only. --all shows the full catalogue.
+    else query.set('view', flags.all ? 'full' : 'agent');
     const response = await fetch(`${daemonUrl.replace(/\/$/, '')}/api/media/models?${query}`, {
       headers: token ? { Authorization: `Bearer ${token}` } : workspaceHeadersFromExplicitFlags(flags) ?? {},
     });
@@ -2034,6 +2039,86 @@ async function runMedia(args) {
   if (sub === 'scaffold') return runMediaScaffold(subArgs);
   if (sub === 'stock-search') return runMediaStockSearch(subArgs);
   return runMediaGenerate(subArgs);
+}
+
+// `od media policy` — read or set Settings → Media providers → "Local image
+// generation only" (app-config `media.localOnly`). Same endpoints the
+// Settings control uses: GET /api/media/models for the effective policy and
+// PUT /api/app-config to change it.
+async function runMediaPolicy(rawArgs) {
+  const flags = parseFlags(rawArgs, {
+    string: ['daemon-url', 'local-only'],
+    boolean: ['json', 'help', 'h'],
+  });
+  if (flags.help || flags.h) {
+    console.log(`Usage:
+  od media policy [--json]                    Show the media generation policy.
+  od media policy --local-only on|off [--json]
+                                              Turn "Local image generation only" on or off.
+
+When on (the default), the daemon refuses hosted image and video providers;
+the local ComfyUI models (comfyui-agent, comfyui-workflow) are the only image
+route and the local HyperFrames renderer the only video route. Audio is not
+affected. OD_MEDIA_LOCAL_ONLY=0|1 in the daemon's environment overrides it.`);
+    return;
+  }
+  const base = (await cliDaemonUrl(flags)).replace(/\/$/, '');
+  if (flags['local-only'] !== undefined) {
+    const raw = String(flags['local-only']).trim().toLowerCase();
+    const value = raw === 'on' || raw === 'true' || raw === '1'
+      ? true
+      : raw === 'off' || raw === 'false' || raw === '0'
+        ? false
+        : null;
+    if (value === null) {
+      console.error('--local-only must be on or off');
+      process.exit(2);
+    }
+    let put;
+    try {
+      put = await fetch(`${base}/api/app-config`, {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ media: { localOnly: value } }),
+      });
+    } catch (err) {
+      surfaceFetchError(err, base);
+      process.exit(3);
+    }
+    if (!put.ok) {
+      console.error(`daemon ${put.status}: ${await put.text()}`);
+      process.exit(4);
+    }
+  }
+  let resp;
+  try {
+    resp = await fetch(`${base}/api/media/models?view=agent`);
+  } catch (err) {
+    surfaceFetchError(err, base);
+    process.exit(3);
+  }
+  if (!resp.ok) {
+    console.error(`daemon ${resp.status}: ${await resp.text()}`);
+    process.exit(4);
+  }
+  const catalog = await resp.json();
+  const policy = catalog?.policy ?? {};
+  const imageDefault = (catalog?.image ?? []).find((m) => m.default)?.id ?? null;
+  const out = {
+    localOnly: policy.localOnly === true,
+    source: policy.source ?? 'default',
+    imageDefault,
+    readyImageModels: (catalog?.image ?? []).filter((m) => m.ready).map((m) => m.id),
+    readyVideoModels: (catalog?.video ?? []).filter((m) => m.ready).map((m) => m.id),
+  };
+  if (flags.json) {
+    process.stdout.write(`${JSON.stringify(out)}\n`);
+    return;
+  }
+  console.log(`Local image generation only: ${out.localOnly ? 'on' : 'off'} (${out.source})`);
+  console.log(`Default image model: ${out.imageDefault ?? 'none ready'}`);
+  console.log(`Ready image models: ${out.readyImageModels.join(', ') || 'none'}`);
+  console.log(`Ready video models: ${out.readyVideoModels.join(', ') || 'none'}`);
 }
 
 async function runMediaStockSearch(rawArgs) {
@@ -2649,7 +2734,8 @@ async function cliDaemonBaseUrl(flags) {
 }
 
 function printMediaHelp() {
-  console.log(`Usage: od media models [--cloud --project <id>] --json
+  console.log(`Usage: od media models [--all] [--cloud --project <id>] --json
+       od media policy [--local-only on|off] [--json]
        od media scaffold --composition-dir .hyperframes-cache/<id> [opts]
        od media generate --surface <image|video|audio> --model <id> [opts]
        od media stock-search --slots '<json>' [opts]
@@ -2660,6 +2746,17 @@ Scaffold:
   HyperFrames init or installing global skills. The target must be new and
   live directly under .hyperframes-cache or motion-source (visible editable source).
   --json is accepted for consistency; scaffold output is always one JSON line.
+
+Models:
+  Lists the media catalogue with readiness: each model carries configured,
+  allowed and ready, and "default" marks a ready model only. While "Local image
+  generation only" is on (the default), hosted image and video models are left
+  out; pass --all to see them, marked allowed: false.
+
+Policy:
+  Shows or sets "Local image generation only" (Settings → Media providers).
+  While it is on, generate refuses hosted image and video models with a
+  MEDIA_LOCAL_ONLY_* error whose nextStep says what to do.
 
 Generate required:
   --surface  image | video | audio
