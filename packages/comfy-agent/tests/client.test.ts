@@ -206,4 +206,15 @@ describe("ComfyClient errors are reported as themselves", () => {
     const err = await client.run(graph(), { timeoutMs: 5000, signal: ac.signal }).catch((e: unknown) => e);
     expect(err).toBeInstanceOf(ComfyInterruptedError);
   });
+
+  it("caller abort also removes the prompt from the queue, so a still-pending prompt never runs", async () => {
+    // /interrupt only stops a running prompt; a prompt waiting behind other
+    // clients' jobs must be deleted from the queue as well.
+    const { fake, client } = await setup({ scenario: () => ({ kind: "never-finish" }) });
+    const ac = new AbortController();
+    setTimeout(() => ac.abort(), 100);
+    await client.run(graph(), { timeoutMs: 5000, signal: ac.signal }).catch(() => undefined);
+    await new Promise((r) => setTimeout(r, 50));
+    expect(fake.queueDeletes).toEqual([{ delete: [fake.prompts[0]!.id] }]);
+  });
 });

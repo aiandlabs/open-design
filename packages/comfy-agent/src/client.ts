@@ -214,6 +214,17 @@ export class ComfyClient {
     if (!res.ok) throw new ComfyHttpError(this.url("/interrupt"), res.status, await res.text());
   }
 
+  /**
+   * Stop a prompt we no longer want, wherever it is: delete it from the queue
+   * (it may still be waiting behind other clients' jobs, which `/interrupt`
+   * does not touch) and interrupt it in case it is already running.
+   * Best effort; never throws.
+   */
+  private cancelPrompt(promptId: string): void {
+    void this.deleteFromQueue([promptId]).catch(() => undefined);
+    void this.interrupt(promptId).catch(() => undefined);
+  }
+
   /** Remove still-pending prompts from the queue. */
   async deleteFromQueue(promptIds: string[]): Promise<void> {
     const res = await this.request("/queue", {
@@ -358,7 +369,7 @@ export class ComfyClient {
     ws?.addEventListener("message", onMessage);
     const onAbort = () => {
       failure ??= new ComfyInterruptedError(promptId, "aborted by caller");
-      void this.interrupt(promptId).catch(() => undefined);
+      this.cancelPrompt(promptId);
       wake();
     };
     options.signal?.addEventListener("abort", onAbort);
@@ -389,8 +400,7 @@ export class ComfyClient {
         }
         const remaining = deadline - Date.now();
         if (remaining <= 0) {
-          void this.deleteFromQueue([promptId]).catch(() => undefined);
-          void this.interrupt(promptId).catch(() => undefined);
+          this.cancelPrompt(promptId);
           throw new ComfyTimeoutError(promptId, timeoutMs, lastStatus);
         }
         const interval = settledBy
