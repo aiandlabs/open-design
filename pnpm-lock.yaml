@@ -90,6 +90,9 @@ importers:
       '@open-design/agui-adapter':
         specifier: workspace:*
         version: link:../../packages/agui-adapter
+      '@open-design/comfy-agent':
+        specifier: workspace:*
+        version: link:../../packages/comfy-agent
       '@open-design/contracts':
         specifier: workspace:*
         version: link:../../packages/contracts

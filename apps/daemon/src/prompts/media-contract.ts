@@ -115,13 +115,62 @@ Do not add a filename, model, provider, internal code, retry offer, or
 follow-up question to the reply. Every other diagnostic stays in the tool trace
 for debugging.`;
 
+/**
+ * ComfyUI section, appended only when the user has configured the ComfyUI
+ * media provider (base URL, model settings or key stored in media-config).
+ * Without that the two comfyui-* ids stay in the catalogue list but nothing
+ * steers the agent toward a local server the user may not have.
+ */
+export const COMFYUI_MEDIA_SECTION = `
+### ComfyUI models (the user has a local ComfyUI server configured)
+
+Two image models run on the user's own ComfyUI server:
+
+- \`comfyui-agent\` — use it when the user asks for a local, ComfyUI or Stable
+  Diffusion image, or for an asset whose requirements the result must meet:
+  an exact pixel size (\`--size 512x512\`), a transparent cut-out
+  (\`--transparent\`), a specific count or composition, or things that must
+  not appear (\`--negative "<text>"\`). It writes a checklist from the
+  request, generates, checks size and transparency in code, has a vision
+  model grade the checklist, and edits the graph to repair failures for up to
+  \`--max-rounds\` rounds (default 3; use 1-2 for a quick draft).
+- \`comfyui-workflow\` — use it when the user gives a ComfyUI workflow JSON
+  (\`--workflow <file>\`) or wants one plain local generation with no review.
+
+Put a plain description of the asset in \`--prompt\`; \`comfyui-agent\` writes
+the Stable Diffusion prompt itself. Each round takes tens of seconds, so always
+use the generate → wait loop below. The dispatcher also writes
+\`<name>.trace.json\` beside the image; leave it in the project and do not read
+it back or describe it in the reply.
+
+\`\`\`bash
+"$OD_NODE_BIN" "$OD_BIN" media generate --project "$OD_PROJECT_ID" \\
+  --surface image --model comfyui-agent --output icon-lantern.png \\
+  --prompt "one red paper lantern icon" --size 512x512 --transparent --max-rounds 2
+\`\`\`
+`;
+
+export type MediaContractOptions = {
+  /** Append {@link COMFYUI_MEDIA_SECTION} (the ComfyUI provider is configured). */
+  comfyuiConfigured?: boolean | undefined;
+};
+
+function withComfyUISection(contract: string, options?: MediaContractOptions): string {
+  if (!options?.comfyuiConfigured) return contract;
+  const marker = '\n### Allowed model IDs (per surface)';
+  return contract.includes(marker)
+    ? contract.replace(marker, `${COMFYUI_MEDIA_SECTION}${marker}`)
+    : `${contract}\n${COMFYUI_MEDIA_SECTION}`;
+}
+
 export function renderMediaGenerationContract(
   mediaExecution?: MediaExecutionPolicy | undefined,
   byokMediaDefaults?: ByokMediaDefaults | undefined,
+  options?: MediaContractOptions,
 ): string {
   const mode = mediaExecution?.mode ?? 'enabled';
   if (mode === 'enabled') {
-    return renderEnabledMediaGenerationContract(mediaExecution, byokMediaDefaults);
+    return withComfyUISection(renderEnabledMediaGenerationContract(mediaExecution, byokMediaDefaults), options);
   }
   const scope = renderMediaPolicyScope(mediaExecution);
   if (mode === 'disabled') {
@@ -145,7 +194,7 @@ ${scope}
 
 ${MEDIA_USER_REPLY_CONTRACT}`;
   }
-  return renderEnabledMediaGenerationContract(mediaExecution, byokMediaDefaults);
+  return withComfyUISection(renderEnabledMediaGenerationContract(mediaExecution, byokMediaDefaults), options);
 }
 
 function renderEnabledMediaGenerationContract(

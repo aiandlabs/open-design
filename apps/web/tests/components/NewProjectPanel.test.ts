@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import { supportedModels } from '../../src/components/NewProjectPanel';
 import { AUDIO_MODELS_BY_KIND, IMAGE_MODELS, VIDEO_MODELS } from '../../src/media/models';
+import { isMediaModelPickerReady } from '../../src/media/provider-readiness';
 
 describe('NewProjectPanel image provider visibility', () => {
   it('shows Vela image models without exposing Codex image models', () => {
@@ -35,5 +36,17 @@ describe('NewProjectPanel image provider visibility', () => {
   it('shows OpenRouter in supported video models', () => {
     const models = supportedModels('video', VIDEO_MODELS);
     expect(models.some((model) => model.provider === 'openrouter')).toBe(true);
+  });
+
+  it('shows the ComfyUI models, ready once a base URL is stored', () => {
+    const models = supportedModels('image', IMAGE_MODELS);
+    expect(models.filter((model) => model.provider === 'comfyui').map((model) => model.id)).toEqual(['comfyui-agent', 'comfyui-workflow']);
+    expect(isMediaModelPickerReady('comfyui-agent', {})).toBe(false);
+    expect(isMediaModelPickerReady('comfyui-agent', { comfyui: { apiKey: '', baseUrl: 'http://127.0.0.1:8188', model: '' } })).toBe(true);
+  });
+
+  it('keeps MiniMax image support', () => {
+    const models = supportedModels('image', IMAGE_MODELS);
+    expect(models.some((model) => model.id === 'minimax-image-01')).toBe(true);
   });
 });

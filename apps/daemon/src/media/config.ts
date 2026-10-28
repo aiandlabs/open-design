@@ -105,6 +105,9 @@ const ENV_KEYS: Record<string, string[]> = {
   aihubmix: ['OD_AIHUBMIX_API_KEY', 'AIHUBMIX_API_KEY'],
   tavily: ['OD_TAVILY_API_KEY', 'TAVILY_API_KEY'],
   leonardo: ['OD_LEONARDO_API_KEY', 'LEONARDO_API_KEY'],
+  // ComfyUI itself is keyless; this slot holds the ai& API key the
+  // comfyui-agent planner and critic use.
+  comfyui: ['OD_COMFYUI_AIAND_API_KEY', 'AIAND_API_KEY'],
 };
 
 // Resolve an `OD_*_DIR` env override using the same semantics as
@@ -372,6 +375,16 @@ export async function resolveProviderConfig(projectRoot: string, providerId: str
       ? { model: entry.model.trim() }
       : {}),
   };
+}
+
+/**
+ * Whether the user stored anything (key, base URL or model settings) for a
+ * provider in media-config. Env-only keys do not count: they are often shared
+ * with other tools and do not mean the user set this provider up.
+ */
+export async function hasStoredProviderEntry(projectRoot: string, providerId: string): Promise<boolean> {
+  const entry = (await readStored(projectRoot))[providerId];
+  return Boolean(entry && (entry.apiKey?.trim() || entry.baseUrl?.trim() || entry.model?.trim()));
 }
 
 /**

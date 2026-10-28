@@ -655,7 +655,7 @@ import {
   VIDEO_LENGTHS_SEC,
   VIDEO_MODELS,
 } from './media/models.js';
-import { readMaskedConfig, writeConfig } from './media/config.js';
+import { hasStoredProviderEntry, readMaskedConfig, writeConfig } from './media/config.js';
 import {
   listMediaTasksByProject,
   listRecentMediaTasks,
@@ -11065,6 +11065,7 @@ export async function startServer({
       sessionMode: normalizeConversationSessionMode(sessionMode),
       mediaExecution,
       byokMediaDefaults,
+      comfyuiConfigured: await hasStoredProviderEntry(PROJECT_ROOT, 'comfyui').catch(() => false),
       streamFormat,
       executionProfile: executionProfileFromStreamFormat(streamFormat),
       ...(pluginBlock ? { pluginBlock } : {}),

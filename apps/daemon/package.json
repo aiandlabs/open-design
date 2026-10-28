@@ -38,6 +38,7 @@
     "@ffmpeg-installer/ffmpeg": "1.1.0",
     "@modelcontextprotocol/sdk": "1.29.0",
     "@open-design/agui-adapter": "workspace:*",
+    "@open-design/comfy-agent": "workspace:*",
     "@open-design/contracts": "workspace:*",
     "@open-design/diagnostics": "workspace:*",
     "@open-design/launcher-proto": "workspace:*",

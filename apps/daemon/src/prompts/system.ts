@@ -894,6 +894,9 @@ export interface ComposeInput {
   // `detectPlatformIntentSignal`). ORed with the metadata-based platform
   // gate for PLATFORM_CONTRACTS_BLOCK under slim; absent = metadata only.
   platformHintSignal?: boolean | undefined;
+  // The ComfyUI media provider is configured, so the media contract tells the
+  // agent when to use comfyui-agent / comfyui-workflow.
+  comfyuiConfigured?: boolean | undefined;
 }
 
 export function composeSystemPrompt({
@@ -938,6 +941,7 @@ export function composeSystemPrompt({
   promptCoreVariant,
   mediaHintSignal,
   platformHintSignal,
+  comfyuiConfigured,
 }: ComposeInput): string {
   // ── FORK POINT: two independent prompt implementations ──────────────────
   // Everything below this early return is the legacy stack; OD Next runs never
@@ -1423,7 +1427,7 @@ export function composeSystemPrompt({
     // hint. The override above tells the agent to nudge the user toward Design
     // mode for anything that actually generates media.
   } else if (isMediaSurface) {
-    parts.push(renderMediaGenerationContract(mediaExecution, byokMediaDefaults));
+    parts.push(renderMediaGenerationContract(mediaExecution, byokMediaDefaults, { comfyuiConfigured }));
     const runtimeDefaultsHint = renderRuntimeMediaDefaultsHint(
       runtimeMediaDefaults,
       byokMediaDefaults,

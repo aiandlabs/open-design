@@ -43,6 +43,9 @@ import { injectMotionSourcePlayer, isMotionVideoComposition, markMotionFrameRend
 //   * provider 'custom-image'→ user-supplied OpenAI-compatible
 //                              /v1/images/generations + /v1/images/edits
 //                              endpoints
+//   * provider 'comfyui'    → local ComfyUI server (./comfyui.ts):
+//                              comfyui-workflow runs one graph,
+//                              comfyui-agent runs the planner/critic loop
 //
 // The fallback stub handlers are gated behind OD_MEDIA_ALLOW_STUBS=1; in
 // release builds they throw StubProviderDisabledError (mapped to HTTP
@@ -97,6 +100,7 @@ import {
 } from './hyperframes-runtime.js';
 import { prepareHyperFramesAudio, hyperFramesAudioEncodingArgs, type HyperFramesAudioTrack } from './hyperframes-audio.js';
 import { renderVelaImage, renderVelaVideo } from './vela.js';
+import { renderComfyUI, type ComfyMediaOptions } from './comfyui.js';
 import {
   ensureProject,
   kindFor,
@@ -355,6 +359,8 @@ export async function generateMedia(args: {
   audioKind?: AudioKind; language?: string; loop?: boolean; promptInfluence?: number;
   compositionDir?: string; image?: string; images?: string[]; onProgress?: ProgressFn; requestInit?: MediaRequestInit;
   desktopFrameRenderer?: DesktopFrameRenderer | null;
+  /** ComfyUI-only options (workflow graph, size, transparency, round limit). */
+  comfy?: ComfyMediaOptions;
   workspaceId?: string;
   onProviderRequestSettled?: (summary: ImageGenerationRequestSummary & { providerId: string }) => void;
   /**
@@ -793,6 +799,23 @@ export async function generateMedia(args: {
       bytes = result.bytes;
       providerNote = result.providerNote;
       suggestedExt = result.suggestedExt;
+    } else if (def.provider === 'comfyui' && surface === 'image') {
+      // Local ComfyUI server; comfyui-agent also calls the ai& API for its
+      // planner and critic. Writes `<name>.trace.json` beside the asset.
+      const result = await renderComfyUI({
+        model: ctx.model,
+        prompt: ctx.prompt,
+        aspect: ctx.aspect,
+        projectDir: dir,
+        outputName: safeOut,
+        credentials,
+        options: args.comfy,
+        requestInit: ctx.requestInit,
+        onProgress: args.onProgress,
+      });
+      bytes = result.bytes;
+      providerNote = result.providerNote;
+      suggestedExt = result.suggestedExt;
     } else if (def.provider === 'fal' && surface === 'image') {
       const result = await renderFalImage(ctx, credentials);
       bytes = result.bytes;
@@ -825,7 +848,7 @@ export async function generateMedia(args: {
     // HyperFrames is a local render, not a remote provider. Falling back
     // to a stub here hides actionable composition/preflight failures and
     // can make the agent retry or narrate a fake MP4 as success.
-    if (def.provider === 'hyperframes' || def.provider === 'vela') {
+    if (def.provider === 'hyperframes' || def.provider === 'vela' || def.provider === 'comfyui') {
       throw err;
     }
     // A real provider failed (network blip, 4xx, missing key, …). We

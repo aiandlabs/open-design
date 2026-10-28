@@ -17,6 +17,7 @@ import { defaultMediaExecutionPolicy, mediaPolicyDenial } from '../media/policy.
 import { formatMediaTaskDiagnostic } from '../media/diagnostics.js';
 import { findMediaModel, type MediaModel } from '../media/models.js';
 import { fetchVelaVideoModels } from '../media/vela.js';
+import { parseComfyMediaOptions } from '../media/comfyui.js';
 import type { CloudVideoModelsResponse } from '@open-design/contracts';
 import type { ImageGenerationRequestSummary } from '../media/image-generation-retry.js';
 import type { RouteDeps } from '../server-context.js';
@@ -468,6 +469,7 @@ export function registerMediaRoutes(app: Express, ctx: RegisterMediaRoutesDeps) 
           ? req.body.promptInfluence
           : undefined,
         compositionDir: req.body?.compositionDir,
+        comfy: parseComfyMediaOptions(req.body),
         image: req.body?.image,
         images: Array.isArray(req.body?.images) ? req.body.images : undefined,
         workspaceId,

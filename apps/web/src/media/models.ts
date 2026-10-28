@@ -166,10 +166,12 @@ export const MEDIA_PROVIDERS: MediaProvider[] = [
   {
     id: 'comfyui',
     label: 'ComfyUI',
-    hint: 'Local JSON workflow server (planned adapter)',
-    integrated: false,
+    hint: 'Local image server · workflows + ai& planner/critic agent (API key = ai& key)',
+    integrated: true,
     defaultBaseUrl: 'http://127.0.0.1:8188',
     docsUrl: 'https://docs.comfy.org/development/core-concepts/workflow',
+    supportsCustomModel: true,
+    customModelPlaceholder: 'planner=moonshotai/kimi-k3, critic=zai-org/glm-5.3-flash, shape=openai',
   },
   {
     id: 'bfl',
@@ -496,6 +498,11 @@ export const IMAGE_MODELS: MediaModel[] = [
     provider: 'custom-image',
     caps: ['t2i', 'i2i'],
   },
+
+  // Local ComfyUI server. `comfyui-agent` plans, generates, checks and repairs
+  // with the ai& API; `comfyui-workflow` runs one graph.
+  { id: 'comfyui-agent', label: 'comfyui-agent', hint: 'ComfyUI · planner/critic loop until the checklist passes', provider: 'comfyui', caps: ['t2i', 'i2i', 'inpaint'] },
+  { id: 'comfyui-workflow', label: 'comfyui-workflow', hint: 'ComfyUI · run a workflow graph once', provider: 'comfyui', caps: ['t2i'] },
 
   // Black Forest Labs FLUX family.
   { id: 'flux-1.1-pro', label: 'flux-1.1-pro', hint: 'BFL · flagship', provider: 'bfl', caps: ['t2i', 'i2i'] },

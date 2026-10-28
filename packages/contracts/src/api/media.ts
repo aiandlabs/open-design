@@ -172,6 +172,18 @@ const MEDIA_FAILURE_NEXT_STEP_BY_CODE: Readonly<Record<string, MediaFailureNextS
   // Identity behind an OD-owned model.
   AMR_AUTH_REQUIRED: 'sign-in',
   AGENT_AUTH_REQUIRED: 'sign-in',
+  // ComfyUI provider (@open-design/comfy-agent). The server is the user's own:
+  // unreachable means the configured URL is wrong or the server is not running.
+  COMFY_CONNECTION: 'open-settings',
+  LLM_CONFIG: 'open-settings',
+  // The server cannot run this graph (missing node, model, or bad workflow).
+  COMFY_VALIDATION: 'switch-model',
+  GRAPH_VALIDATION: 'switch-model',
+  GRAPH_EDIT: 'switch-model',
+  WORKFLOW_FORMAT: 'switch-model',
+  COMFY_MISSING_OUTPUT: 'switch-model',
+  COMFY_TIMEOUT: 'retry-later',
+  COMFY_OUTPUT_FETCH: 'retry-later',
 };
 
 /**

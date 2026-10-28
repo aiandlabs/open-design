@@ -87,11 +87,17 @@ const MEDIA_GENERATE_STRING_FLAGS = new Set([
   'image',
   'daemon-url',
   'language',
+  // ComfyUI models only.
+  'workflow',
+  'max-rounds',
+  'size',
+  'negative',
 ]);
 const MEDIA_GENERATE_BOOLEAN_FLAGS = new Set([
   'help',
   'h',
   'loop',
+  'transparent',
 ]);
 const MEDIA_SCAFFOLD_STRING_FLAGS = new Set([
   'project',
@@ -2205,6 +2211,8 @@ async function runMediaGenerate(rawArgs) {
   if (flags.duration != null) body.duration = Number(flags.duration);
   if (flags['prompt-influence'] != null) body.promptInfluence = Number(flags['prompt-influence']);
   if (flags.loop === true) body.loop = true;
+  const comfy = await comfyOptionsFromFlags(flags);
+  if (comfy) body.comfy = comfy;
 
   const url = token
     ? `${daemonUrl.replace(/\/$/, '')}/api/tools/media/generate`
@@ -2563,6 +2571,55 @@ function repeatableFlagValues(argv, name) {
   return values;
 }
 
+// ComfyUI-only flags (--workflow, --max-rounds, --size, --negative,
+// --transparent) travel to the daemon as `body.comfy`. They are rejected for
+// other models so a typo'd model id fails loudly instead of ignoring them.
+async function comfyOptionsFromFlags(flags) {
+  const used = ['workflow', 'max-rounds', 'size', 'negative'].filter((k) => flags[k] != null);
+  if (flags.transparent === true) used.push('transparent');
+  if (used.length === 0) return null;
+  if (!String(flags.model || '').startsWith('comfyui-')) {
+    console.error(`--${used.join(', --')} only apply to comfyui-agent / comfyui-workflow`);
+    process.exit(2);
+  }
+  const comfy = {};
+  if (flags.workflow != null) {
+    let text;
+    try {
+      text = await readPromptFromFlags({ 'prompt-file': flags.workflow });
+    } catch (err) {
+      console.error(`--workflow: cannot read ${flags.workflow}: ${err && err.message ? err.message : err}`);
+      process.exit(2);
+    }
+    try {
+      comfy.workflow = JSON.parse(text);
+    } catch {
+      console.error(`--workflow: ${flags.workflow} is not valid JSON (expected an API- or UI-format ComfyUI workflow)`);
+      process.exit(2);
+    }
+  }
+  if (flags['max-rounds'] != null) {
+    const n = Number(flags['max-rounds']);
+    if (!Number.isInteger(n) || n < 1 || n > 10) {
+      console.error('--max-rounds must be an integer from 1 to 10');
+      process.exit(2);
+    }
+    comfy.maxRounds = n;
+  }
+  if (flags.size != null) {
+    const m = /^(\d+)x(\d+)$/i.exec(String(flags.size).trim());
+    if (!m || Number(m[1]) < 16 || Number(m[2]) < 16 || Number(m[1]) > 8192 || Number(m[2]) > 8192) {
+      console.error('--size must be WIDTHxHEIGHT, e.g. 512x512 (16-8192 each)');
+      process.exit(2);
+    }
+    comfy.width = Number(m[1]);
+    comfy.height = Number(m[2]);
+  }
+  if (flags.negative != null) comfy.negative = String(flags.negative);
+  if (flags.transparent === true) comfy.transparent = true;
+  return comfy;
+}
+
 async function cliDaemonUrl(flags) {
   return resolveDaemonUrl({ flagUrl: flags?.['daemon-url'] });
 }
@@ -2621,6 +2678,24 @@ Common options:
                             are references. Existing providers still receive
                             the first image through the legacy single-image field.
   --daemon-url <url>
+
+ComfyUI options (--model comfyui-agent | comfyui-workflow; the ComfyUI
+provider must be configured in Settings → Media providers):
+  --size <W>x<H>            Exact output size in pixels (e.g. 512x512). The image
+                            is generated at the checkpoint's native size and
+                            cropped/resized to this. Default: from --aspect.
+  --transparent             comfyui-agent: cut-out PNG with an alpha background
+                            (generated on a flat key colour, keyed in code).
+  --negative "<text>"       Things the image must not contain.
+  --max-rounds <n>          comfyui-agent: generate/critique/repair rounds (1-10,
+                            default 3). Each round takes tens of seconds locally.
+  --workflow <file|->       ComfyUI workflow JSON (API format preferred; UI format
+                            without subgraphs is converted). comfyui-workflow runs
+                            it once with prompt/size/seed filled; comfyui-agent
+                            uses it as the starting graph. Without it, the default
+                            text-to-image graph is used.
+  comfyui-agent writes <output>.trace.json beside the image (per-round graph,
+  checks, critic grades, edits, tokens, cost, timing).
 
 Output: a single line of JSON: {"file": { name, size, kind, mime, ... }}
   Slow models return {"taskId": "...", "nextSince": n} with exit 0 instead —
