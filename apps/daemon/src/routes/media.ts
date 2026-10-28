@@ -1123,8 +1123,6 @@ export function registerMediaRoutes(app: Express, ctx: RegisterMediaRoutesDeps) 
     await handleStockSearch(req, res, grant.projectId, grant);
   });
 
-  // Existing UI/project clients use the same execution path. Bearer callers
-  // cannot downgrade to browser authority or select a different project.
   // Generated assets and their review (accept / reject). The project folder is
   // resolved the way generateMedia writes it, so these are the files it made.
   app.get('/api/projects/:id/media/assets', async (req, res) => {
@@ -1153,6 +1151,8 @@ export function registerMediaRoutes(app: Express, ctx: RegisterMediaRoutesDeps) 
     }
   });
 
+  // Existing UI/project clients use the same execution path. Bearer callers
+  // cannot downgrade to browser authority or select a different project.
   app.post('/api/projects/:id/media/stock-search', async (req, res) => {
     if (!isLocalSameOrigin(req, getResolvedPort())) return sendApiError(res, 403, 'FORBIDDEN', 'cross-origin request rejected');
     const bearer = /^Bearer(?:\s|$)/i.test(req.get('authorization')?.trim() ?? '');
