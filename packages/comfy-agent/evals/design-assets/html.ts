@@ -5,11 +5,10 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 
 import { decodePng, encodePng, fitWithin } from "../../src/image.js";
-import { ARMS, rowKey, type Arm, type JudgeResult, type ResultRow } from "./results.js";
+import { ARM_LABEL, ARMS, rowKey, type Arm, type JudgeResult, type ResultRow } from "./results.js";
 import { scoreRow } from "./summary.js";
 import type { EvalTask } from "./tasks.js";
 
-const ARM_LABEL: Record<Arm, string> = { raw: "A raw", plan: "B plan", loop: "C loop" };
 
 export function escapeHtml(s: string): string {
   return s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);

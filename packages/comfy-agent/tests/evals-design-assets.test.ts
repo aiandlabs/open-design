@@ -11,7 +11,10 @@ import { renderContactSheet, renderJudgeSheet } from "../evals/design-assets/htm
 import { alignJudgement, JUDGE_TOOL, judgeImage, judgeUserText, CUTOUT_EXPLANATION, modelFamily, selectJudgeModel } from "../evals/design-assets/judge.js";
 import { writeReports } from "../evals/design-assets/report.js";
 import {
+  ARMS,
+  DEFAULT_ARMS,
   appendResult,
+  armApplies,
   judgesToRedo,
   parseResults,
   pendingJobs,
@@ -26,6 +29,9 @@ import { armStats, judgeAgreement, modelsReport, pairedReport, renderSummaryMark
 import { checkpointOf, executionMs, foreignCheckpoints, llmModelsOf } from "../evals/design-assets/timing.js";
 import { DEFAULT_RELIABILITY_SUBSET, loadTasks, parseTasks, selectTasks, type EvalTask } from "../evals/design-assets/tasks.js";
 import { runArm } from "../evals/design-assets/arms.js";
+import { judgeSet, readSetResults, appendSetResult, setMembers, setReferencesFor, SET_JUDGE_TOOL } from "../evals/design-assets/sets.js";
+import { createImage, encodePng } from "../src/image.js";
+import { MATTING_NODES } from "./fixtures/object-info-matting.js";
 import { ComfyClient } from "../src/client.js";
 import { AiandClient } from "../src/llm.js";
 import { ModelSelectionError } from "../src/errors.js";
@@ -98,11 +104,28 @@ const ALL = [true, true, true, true, true];
 // ---------------------------------------------------------------------------
 
 describe("task set", () => {
-  it("loads the committed tasks: 30 tasks, 5 groups, 5 checklist items each", async () => {
+  it("loads the committed tasks: 44 tasks, 5 groups, 5 checklist items each; 20 icons including two sets of 4", async () => {
     const tasks = await loadTasks();
-    expect(tasks).toHaveLength(30);
+    expect(tasks).toHaveLength(44);
     expect(new Set(tasks.map((t) => t.group)).size).toBe(5);
     expect(tasks.every((t) => t.checklist.length === 5)).toBe(true);
+    expect(tasks.filter((t) => t.group === "icon")).toHaveLength(20);
+    expect(setMembers(tasks, "glossy-ui").map((t) => t.id)).toEqual(["set-glossy-chat", "set-glossy-calendar", "set-glossy-bell", "set-glossy-lock"]);
+    expect(setMembers(tasks, "cafe")).toHaveLength(4);
+    expect(tasks.filter((t) => t.set).every((t) => t.group === "icon" && t.transparent)).toBe(true);
+  });
+
+  it("runs each ablation only on the tasks it measures, and scores the right cut-out check", () => {
+    const icon = { transparent: true, group: "icon" };
+    const setIcon = { ...icon, set: "cafe" };
+    const hero = { transparent: false, group: "hero" };
+    expect(ARMS.filter((a) => armApplies(a, hero))).toEqual(["raw", "plan", "loop"]);
+    expect(ARMS.filter((a) => armApplies(a, icon))).toEqual(["raw", "plan", "loop", "loop-chroma", "loop-noref"]);
+    expect(ARMS.filter((a) => armApplies(a, setIcon))).toEqual([...ARMS]);
+    expect(DEFAULT_ARMS).toEqual(["raw", "plan", "loop"]);
+    expect(scoredCheckIds(false)).toEqual(["size"]);
+    expect(scoredCheckIds(true)).toEqual(["size", "alpha", "key_residue"]);
+    expect(scoredCheckIds(true, "matte", true)).toEqual(["size", "alpha", "matte_residue", "reference_copy"]);
   });
 
   it("has a reliability subset of 8 known tasks that covers every group and some transparent tasks", async () => {
@@ -483,5 +506,91 @@ describe("raw arm", () => {
       await fake.close();
       await rm(workDir, { recursive: true, force: true });
     }
+  });
+});
+
+describe("raw arm with a matting model", () => {
+  it("cuts transparent tasks out with the matting model, like the loop, and scores matte_residue", async () => {
+    const matted = createImage(512, 512, { r: 250, g: 250, b: 250, a: 0 });
+    for (let y = 150; y < 350; y += 1) for (let x = 150; x < 350; x += 1) matted.data.set([200, 30, 40, 255], (y * 512 + x) * 4);
+    const fake = await startFakeComfy({ objectInfo: { ...makeObjectInfo(), ...structuredClone(FAMILY_NODES), ...structuredClone(MATTING_NODES) }, render: () => encodePng(matted) });
+    const workDir = await mkdtemp(path.join(os.tmpdir(), "raw-matte-"));
+    try {
+      const task = (await loadTasks()).find((t) => t.id === "icon-lantern")!;
+      const out = await runArm("raw", task, 1, {
+        comfy: new ComfyClient({ baseUrl: fake.url, WebSocket: null, pollIntervalMs: 10 }),
+        llm: new AiandClient({ apiKey: "unused" }),
+        plannerModel: "p",
+        criticModel: "c",
+        shape: "openai",
+        loopMaxRounds: 1,
+        timeoutMs: 10_000,
+        workDir,
+      });
+      expect(out.row).toMatchObject({ status: "ok", cutout: "matte", scoredChecks: ["size", "alpha", "matte_residue"] });
+      expect(out.row.checks.find((c) => c.id === "matte_residue")?.pass).toBe(true);
+      expect(Object.values(fake.prompts[0]!.graph).some((n) => n.class_type === "RemoveBackground")).toBe(true);
+      expect(String(fake.prompts[0]!.graph.pos!.inputs.text)).toContain("white background");
+    } finally {
+      await fake.close();
+      await rm(workDir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("icon sets", () => {
+  const tasks: EvalTask[] = [
+    { id: "a", group: "icon", set: "s", width: 64, height: 64, transparent: true, prompt: "a", checklist: ["x"] },
+    { id: "b", group: "icon", set: "s", width: 64, height: 64, transparent: true, prompt: "b", checklist: ["x"] },
+    { id: "c", group: "icon", set: "s", width: 64, height: 64, transparent: true, prompt: "c", checklist: ["x"] },
+  ];
+
+  it("gives a member the earlier members of the same arm and seed as style references, newest first, and none for loop-noset", () => {
+    const rows = [
+      row({ taskId: "a", arm: "loop", imagePath: "/img/a-loop.png" }),
+      row({ taskId: "b", arm: "loop", imagePath: "/img/b-loop.png" }),
+      row({ taskId: "a", arm: "plan", imagePath: "/img/a-plan.png" }),
+      row({ taskId: "a", arm: "loop", seed: 2, imagePath: "/img/a-loop-2.png" }),
+    ];
+    const read = (p: string) => Buffer.from(p);
+    expect(setReferencesFor(tasks[2]!, "loop", 1, tasks, rows, read).map((r) => r.id)).toEqual(["b", "a"]);
+    expect(setReferencesFor(tasks[1]!, "plan", 1, tasks, rows, read).map((r) => r.id)).toEqual(["a"]);
+    expect(setReferencesFor(tasks[0]!, "loop", 1, tasks, rows, read)).toEqual([]);
+    expect(setReferencesFor(tasks[2]!, "loop-noset", 1, tasks, rows, read)).toEqual([]);
+  });
+
+  it("judges a finished set from one sheet, names off-style members, and survives a broken judge", async () => {
+    const calls: Record<string, unknown>[] = [];
+    const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
+      if (String(input).endsWith("/models")) return new Response(JSON.stringify({ data: [{ id: "judge/vision", capabilities: ["vision", "tool_calling"] }] }));
+      const body = JSON.parse(String(init!.body)) as Record<string, unknown>;
+      calls.push(body);
+      const args = { consistent: false, score: 2, outliers: [3, 9], evidence: "the third icon is flat" };
+      return new Response(JSON.stringify({ choices: [{ message: { tool_calls: [{ function: { name: SET_JUDGE_TOOL, arguments: JSON.stringify(args) } }] } }], usage: { prompt_tokens: 10, completion_tokens: 5 } }), {
+        headers: { "X-Cost": "0.001", "X-Cost-Currency": "USD" },
+      });
+    }) as typeof fetch;
+    const llm = new AiandClient({ apiKey: "k", baseUrl: "https://llm.test/v1", fetch: fetchImpl });
+    const members = ["a", "b", "c"].map((id) => ({ id, image: createImage(32, 32, { r: 100, g: 100, b: 100 }) }));
+    const j = await judgeSet("s", "loop", 1, members, { llm, model: "judge/vision", shape: "openai" });
+    expect(j).toMatchObject({ set: "s", arm: "loop", seed: 1, members: ["a", "b", "c"], score: 2, consistent: false, outliers: ["c"], costUsd: 0.001 });
+    expect(JSON.stringify(calls[0]!.messages).match(/data:image\/png;base64,/g)).toHaveLength(1);
+
+    const broken = new AiandClient({ apiKey: "k", baseUrl: "https://llm.test/v1", fetch: (async () => new Response("no", { status: 500 })) as typeof fetch });
+    expect((await judgeSet("s", "loop", 1, members, { llm: broken, model: "judge/vision", shape: "openai" })).error).toBeTruthy();
+  });
+
+  it("reports set consistency per arm in the summary, and pairs each ablation with the loop", async () => {
+    const dir = await tempDir();
+    const file = path.join(dir, "set-results.jsonl");
+    const base = { members: ["a", "b"], model: "j", costUsd: 0, finishedAt: "2026-10-29T00:00:00Z" };
+    await appendSetResult(file, { ...base, set: "s", arm: "loop", seed: 1, score: 5, consistent: true, outliers: [] });
+    await appendSetResult(file, { ...base, set: "s", arm: "loop-noset", seed: 1, score: 2, consistent: false, outliers: ["b"] });
+    const sets = await readSetResults(file);
+    const md = renderSummaryMarkdown(summarize([row({ arm: "loop", passes: ALL }), row({ arm: "loop-noset", passes: ALL })], new Date(), sets));
+    expect(md).toContain("## Icon set consistency");
+    expect(md).toContain("| C loop | 1 | 100.0% | 5.00 |");
+    expect(md).toContain("| C− no set refs | 1 | 0.0% | 2.00 |");
+    expect(md).toContain("| C loop vs C− no set refs |");
   });
 });

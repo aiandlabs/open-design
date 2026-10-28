@@ -4,8 +4,34 @@ import { appendFile, readFile } from "node:fs/promises";
 
 import type { CheckResult } from "../../src/loop.js";
 
-export const ARMS = ["raw", "plan", "loop"] as const;
+/**
+ * raw: the request as the prompt, one image. plan: the planner's prompt and
+ * references, one image. loop: plan, critic and repair rounds. The ablation
+ * arms are the loop with one feature off: chroma keying instead of matting,
+ * no shape references, no set (consistency) references.
+ */
+export const ARMS = ["raw", "plan", "loop", "loop-chroma", "loop-noref", "loop-noset"] as const;
 export type Arm = (typeof ARMS)[number];
+
+export const ARM_LABEL: Record<Arm, string> = {
+  raw: "A raw",
+  plan: "B plan",
+  loop: "C loop",
+  "loop-chroma": "C− chroma key",
+  "loop-noref": "C− no shape refs",
+  "loop-noset": "C− no set refs",
+};
+
+/** Arms a run uses when --arms is not given. The ablations are opt-in. */
+export const DEFAULT_ARMS: readonly Arm[] = ["raw", "plan", "loop"];
+
+/** Whether an arm measures anything on a task (an ablation only runs where its feature is used). */
+export function armApplies(arm: Arm, task: { transparent: boolean; group: string; set?: string }): boolean {
+  if (arm === "loop-chroma") return task.transparent;
+  if (arm === "loop-noref") return task.group === "icon";
+  if (arm === "loop-noset") return Boolean(task.set);
+  return true;
+}
 
 export type JudgedItem = { id: string; text: string; pass: boolean; evidence?: string };
 
@@ -38,6 +64,12 @@ export type ResultRow = {
   error?: RowError;
   /** ComfyUI checkpoint (image model) the arm generated with. */
   checkpoint?: string;
+  /** Transparent tasks: how the subject was cut out. Rows from before matting have none (chroma keying). */
+  cutout?: "matte" | "chroma-key";
+  /** Icon set the task belongs to. */
+  set?: string;
+  /** References the returned image was generated with (ids). */
+  references?: { shape: string[]; set: string[] };
   /** Planner and critic the arm used (absent for raw, which uses neither). */
   models?: { planner: string; critic: string };
   /** Rounds of generation (1 for raw and plan). */
@@ -67,9 +99,17 @@ export type ResultRow = {
   finishedAt: string;
 };
 
-/** Which code checks count toward a full pass: size always; alpha and key residue when transparency is required. */
-export function scoredCheckIds(transparent: boolean): string[] {
-  return transparent ? ["size", "alpha", "key_residue"] : ["size"];
+/**
+ * Which code checks count toward a full pass: size always; alpha and the
+ * cut-out's residue check (matte_residue or key_residue) when transparency is
+ * required; reference_copy whenever references were used.
+ */
+export function scoredCheckIds(transparent: boolean, cutout: "matte" | "chroma-key" = "chroma-key", usedReferences = false): string[] {
+  return [
+    "size",
+    ...(transparent ? ["alpha", cutout === "matte" ? "matte_residue" : "key_residue"] : []),
+    ...(usedReferences ? ["reference_copy"] : []),
+  ];
 }
 
 export function rowKey(r: { taskId: string; arm: Arm; seed: number }): string {

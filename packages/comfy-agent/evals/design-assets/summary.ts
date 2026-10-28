@@ -1,6 +1,7 @@
 // Scoring and aggregation: results.jsonl rows → summary.json and summary.md.
 
-import { ARMS, type Arm, type JudgeResult, type ResultRow } from "./results.js";
+import { ARM_LABEL, ARMS, type Arm, type JudgeResult, type ResultRow } from "./results.js";
+import { setConsistencyByArm, type SetJudgement } from "./sets.js";
 import { cohensKappa, comparePaired, mean, median, type Agreement, type PairedComparison } from "./stats.js";
 
 export type RowScore = {
@@ -226,15 +227,21 @@ export type Summary = {
   paired: PairedReport[];
   judgeAgreement: JudgeAgreementReport;
   errors: { taskId: string; arm: Arm; seed: number; stage: string; class: string; message: string }[];
+  /** Icon sets judged as a whole (set-results.jsonl). */
+  sets?: { judgements: SetJudgement[]; byArm: ReturnType<typeof setConsistencyByArm> };
 };
 
-export function summarize(rows: ResultRow[], now = new Date()): Summary {
+export function summarize(rows: ResultRow[], now = new Date(), setJudgements: SetJudgement[] = []): Summary {
   const arms = ARMS.filter((a) => rows.some((r) => r.arm === a));
   const groups = [...new Set(rows.map((r) => r.group))];
   const paired: PairedReport[] = [];
   if (arms.includes("loop") && arms.includes("raw")) paired.push(pairedReport(rows, "raw", "loop"));
   if (arms.includes("loop") && arms.includes("plan")) paired.push(pairedReport(rows, "plan", "loop"));
   if (arms.includes("plan") && arms.includes("raw")) paired.push(pairedReport(rows, "raw", "plan"));
+  // Ablations: the feature off (a) against the full loop (b), on the tasks both ran.
+  for (const off of ["loop-chroma", "loop-noref", "loop-noset"] as const) {
+    if (arms.includes("loop") && arms.includes(off)) paired.push(pairedReport(rows, off, "loop"));
+  }
   const errors: Summary["errors"] = [];
   for (const r of rows) {
     if (r.error) errors.push({ taskId: r.taskId, arm: r.arm, seed: r.seed, stage: r.error.stage, class: r.error.class, message: r.error.message });
@@ -255,13 +262,13 @@ export function summarize(rows: ResultRow[], now = new Date()): Summary {
     paired,
     judgeAgreement: judgeAgreement(rows),
     errors,
+    ...(setJudgements.length ? { sets: { judgements: setJudgements, byArm: setConsistencyByArm(setJudgements) } } : {}),
   };
 }
 
 // ---------------------------------------------------------------------------
 // Markdown
 
-const ARM_LABEL: Record<Arm, string> = { raw: "A raw", plan: "B plan", loop: "C loop" };
 const pct = (v: number | null) => (v === null ? "–" : `${(v * 100).toFixed(1)}%`);
 const num = (v: number | null, d = 1) => (v === null ? "–" : v.toFixed(d));
 const usd = (v: number | null) => (v === null ? "–" : `$${v.toFixed(4)}`);
@@ -294,7 +301,8 @@ export function renderSummaryMarkdown(s: Summary): string {
       `Judge: ${uses(s.models.judge)}. Second judge (reliability subset): ${uses(s.models.judge2)}.`,
     "",
     "Definitions: *item pass* is the share of the task's 5 fixed checklist items the judge passed. *Full pass* is all 5 items plus the code checks " +
-      "(exact size; alpha and key residue when the task needs transparency). A generation error scores 0 and no full pass; a row the judge could not grade is left out. " +
+      "(exact size; alpha and the cut-out residue check, matte_residue or key_residue, when the task needs transparency; reference_copy when references were used). " +
+      "A generation error scores 0 and no full pass; a row the judge could not grade is left out. " +
       "Cost is the arm's own planner and critic LLM cost; judge cost is listed separately. " +
       "*Wall s* is measured by the runner and includes time queued behind other clients of the same ComfyUI server; *excl. queue* subtracts that wait " +
       "(ComfyUI time seen by the client minus execution time from the server's history timestamps). *ComfyUI exec s* is execution time only.",
@@ -326,6 +334,22 @@ export function renderSummaryMarkdown(s: Summary): string {
           `${c.ci95 ? `${signed(c.ci95.low)} … ${signed(c.ci95.high)}` : "–"} | ${c.signTestP.toFixed(3)} |`,
       );
     }
+  }
+  if (s.sets) {
+    out.push(
+      "",
+      "## Icon set consistency",
+      "",
+      "Each finished set (same arm and seed) is shown to the judge as one sheet and scored 1–5 for a shared style; *consistent* is a score of 4 or 5.",
+      "",
+      "| Arm | Sets judged | Consistent | Mean score |",
+      "|---|---:|---:|---:|",
+      ...s.sets.byArm.map((b) => `| ${ARM_LABEL[b.arm]} | ${b.sets} | ${pct(b.consistentRate)} | ${num(b.meanScore, 2)} |`),
+      "",
+      "| Set | Arm | Seed | Score | Off-style members |",
+      "|---|---|---:|---:|---|",
+      ...s.sets.judgements.map((j) => `| ${j.set} | ${ARM_LABEL[j.arm]} | ${j.seed} | ${j.error ? `error: ${j.error}` : j.score ?? "–"} | ${j.outliers?.join(", ") || "–"} |`),
+    );
   }
   const ja = s.judgeAgreement;
   out.push(

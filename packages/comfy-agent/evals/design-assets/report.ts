@@ -5,6 +5,7 @@ import path from "node:path";
 
 import { loadThumbs, renderContactSheet, renderJudgeSheet } from "./html.js";
 import { ARMS, type ResultRow } from "./results.js";
+import { readSetResults } from "./sets.js";
 import { renderSummaryMarkdown, summarize } from "./summary.js";
 import type { EvalTask } from "./tasks.js";
 import { checkpointOf, llmModelsOf } from "./timing.js";
@@ -21,7 +22,7 @@ export async function writeReports(outDir: string, tasks: EvalTask[], rows: Resu
     }),
   );
   const ordered = filled.sort((a, b) => a.taskId.localeCompare(b.taskId) || ARMS.indexOf(a.arm) - ARMS.indexOf(b.arm) || a.seed - b.seed);
-  const summary = summarize(ordered);
+  const summary = summarize(ordered, new Date(), await readSetResults(path.join(outDir, "set-results.jsonl")));
   await writeFile(path.join(outDir, "summary.json"), `${JSON.stringify(summary, null, 2)}\n`);
   await writeFile(path.join(outDir, "summary.md"), renderSummaryMarkdown(summary));
   const thumbs = await loadThumbs(ordered, (r) => r.imagePath, 360);

@@ -22,6 +22,8 @@
     "build": "node ./esbuild.config.mjs && tsc -p tsconfig.json --emitDeclarationOnly",
     "test": "vitest run",
     "eval:design-assets": "tsx ./evals/design-assets/run.ts",
+    "eval:icons": "tsx ./evals/design-assets/run.ts --groups icon --arms raw,plan,loop,loop-chroma,loop-noref,loop-noset",
+    "live:icons": "COMFY_AGENT_LIVE_ICONS=1 vitest run tests/live-icons.test.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.tests.json --noEmit"
   },
   "dependencies": {

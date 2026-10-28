@@ -13,6 +13,12 @@ export type EvalTask = {
   prompt: string;
   /** Fixed, human-written checklist. The judge grades exactly these items. */
   checklist: string[];
+  /**
+   * Icon set this task belongs to. Members are generated in file order; each
+   * gets the earlier members (same arm and seed) as style references, and the
+   * finished set is judged for consistency as a whole.
+   */
+  set?: string;
 };
 
 export const TASKS_PATH = path.join(path.dirname(fileURLToPath(import.meta.url)), "tasks.json");
@@ -51,6 +57,7 @@ export function parseTasks(raw: unknown): EvalTask[] {
     if (!Array.isArray(o.checklist) || o.checklist.length === 0 || !o.checklist.every((c) => typeof c === "string" && c.trim())) {
       throw new Error(`${o.id}: checklist must be a non-empty array of strings`);
     }
+    if (o.set !== undefined && (typeof o.set !== "string" || !o.set.trim())) throw new Error(`${o.id}: set must be a non-empty string`);
     return {
       id: o.id,
       group: o.group,
@@ -59,6 +66,7 @@ export function parseTasks(raw: unknown): EvalTask[] {
       transparent: o.transparent === true,
       prompt: o.prompt.trim(),
       checklist: (o.checklist as string[]).map((c) => c.trim()),
+      ...(typeof o.set === "string" ? { set: o.set.trim() } : {}),
     };
   });
 }

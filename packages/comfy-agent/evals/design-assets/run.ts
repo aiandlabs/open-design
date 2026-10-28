@@ -10,6 +10,7 @@
 //
 // Needs COMFYUI_URL (default http://127.0.0.1:8188) and AIAND_API_KEY.
 
+import { existsSync, readFileSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { parseArgs } from "node:util";
@@ -20,7 +21,11 @@ import { resolveComfyAgentConfig, parseApiShape } from "../../src/config.js";
 import { AiandClient, type ApiShape } from "../../src/llm.js";
 import { runArm } from "./arms.js";
 import { JUDGE2_PREFERENCES, JUDGE_PREFERENCES, judgeImage, judgeView, modelFamily, selectJudgeModel } from "./judge.js";
-import { ARMS, appendResult, judgesToRedo, pendingJobs, readResults, type Arm, type Job, type ResultRow } from "./results.js";
+import { ARMS, DEFAULT_ARMS, appendResult, armApplies, judgesToRedo, pendingJobs, readResults, type Arm, type Job, type ResultRow } from "./results.js";
+import { appendSetResult, judgeSet, readSetResults, setMembers, setReferencesFor } from "./sets.js";
+import { decodePng } from "../../src/image.js";
+import { chooseBackgroundRemovalModel } from "../../src/object-info.js";
+import { ReferenceLibrary } from "../../src/references.js";
 import { writeReports } from "./report.js";
 import { checkpointOf, comfyTiming, foreignCheckpoints, llmModelsOf } from "./timing.js";
 import { DEFAULT_RELIABILITY_SUBSET, loadTasks, selectTasks, TASKS_PATH, type EvalTask } from "./tasks.js";
@@ -30,7 +35,12 @@ const HELP = `Usage: eval:design-assets --out <dir> [options]
   --out <dir>             run directory (required); rerun with the same dir to resume
   --tasks id,id           only these task ids
   --groups g,g            only these groups
-  --arms raw,plan,loop    arms to run (default all three)
+  --arms raw,plan,loop    arms to run (default raw,plan,loop). Ablations, each run only on the
+                          tasks it measures: loop-chroma (chroma key instead of matting;
+                          transparent tasks), loop-noref (no shape references; icon tasks),
+                          loop-noset (no style references from the set; set tasks)
+  --reference-cache <dir> cache for emoji / Material Symbols references (default <out>/reference-cache)
+  --no-references         no shape references for icon tasks in any arm
   --seeds 1,2             seeds; every arm uses the same seeds (default 1)
   --max-rounds <n>        rounds for the loop arm (default 4)
   --judge <model>         judge model; default: picked from the ai& catalog, preferring
@@ -96,6 +106,8 @@ async function main(): Promise<void> {
       "report-only": { type: "boolean" },
       "allow-mixed-models": { type: "boolean" },
       "tasks-file": { type: "string" },
+      "reference-cache": { type: "string" },
+      "no-references": { type: "boolean" },
       help: { type: "boolean" },
     },
     allowPositionals: false,
@@ -111,7 +123,7 @@ async function main(): Promise<void> {
 
   const allTasks = await loadTasks(values["tasks-file"] ? path.resolve(values["tasks-file"]) : TASKS_PATH);
   const tasks = selectTasks(allTasks, { ...(list(values.tasks) ? { ids: list(values.tasks)! } : {}), ...(list(values.groups) ? { groups: list(values.groups)! } : {}) });
-  const arms = (list(values.arms) ?? [...ARMS]) as Arm[];
+  const arms = (list(values.arms) ?? [...DEFAULT_ARMS]) as Arm[];
   const badArm = arms.find((a) => !ARMS.includes(a));
   if (badArm) throw new Error(`unknown arm "${badArm}"; use ${ARMS.join(", ")}`);
   const seeds = (list(values.seeds) ?? ["1"]).map((s) => {
@@ -193,11 +205,17 @@ async function main(): Promise<void> {
     // A resumed run must keep the models it started with; otherwise the
     // comparison would be between models, not arms. Refuse to mix unless asked.
     const existing = await readResults(resultsFile);
-    const checkpoint = chooseModel(await comfy.getObjectInfo()).model;
+    const objectInfo = await comfy.getObjectInfo();
+    const checkpoint = chooseModel(objectInfo).model;
+    // Transparent tasks are cut out with the matting model when installed; rows
+    // from before matting (no cutout field) were chroma keyed.
+    const cutoutNow = chooseBackgroundRemovalModel(objectInfo) ? "matte" : "chroma-key";
+    const existingCutouts = existing.filter((r) => r.status === "ok" && r.transparent && r.arm !== "loop-chroma").map((r) => r.cutout ?? "chroma-key");
     const existingCheckpoints = await Promise.all(existing.filter((r) => r.status === "ok").map((r) => checkpointOf(r)));
     const existingLlms = await Promise.all(existing.filter((r) => r.status === "ok").map((r) => llmModelsOf(r)));
     const mixed = [
       ["image model", foreignCheckpoints(existingCheckpoints, checkpoint), checkpoint],
+      ["cut-out method", foreignCheckpoints(existingCutouts, cutoutNow), cutoutNow],
       ["planner", foreignCheckpoints(existingLlms.map((m) => m?.planner), plannerModel), plannerModel],
       ["critic", foreignCheckpoints(existingLlms.map((m) => m?.critic), criticModel), criticModel],
       ["judge", foreignCheckpoints(existing.map((r) => r.judge?.model), judgeModel), judgeModel],
@@ -234,7 +252,28 @@ async function main(): Promise<void> {
     }
 
     const rerunStopReasons = list(values["rerun-stop-reasons"]) ?? [];
-    const jobs: Job[] = tasks.flatMap((t) => seeds.flatMap((seed) => arms.map((arm) => ({ taskId: t.id, arm, seed }))));
+    const jobs: Job[] = tasks.flatMap((t) => seeds.flatMap((seed) => arms.filter((arm) => armApplies(arm, t)).map((arm) => ({ taskId: t.id, arm, seed }))));
+    // Shape references for icon tasks: fetched from pinned sources and cached.
+    const library = values["no-references"]
+      ? undefined
+      : new ReferenceLibrary({ cacheDir: path.resolve(values["reference-cache"] ?? path.join(outDir, "reference-cache")) });
+    // Rows known so far (existing and new), for set references and set judging.
+    const known: ResultRow[] = [...existing];
+    const setResultsFile = path.join(outDir, "set-results.jsonl");
+    const judgedSets = new Set((await readSetResults(setResultsFile)).filter((j) => !j.error).map((j) => `${j.set}|${j.arm}|${j.seed}`));
+    const readImage = (p: string) => (existsSync(p) ? readFileSync(p) : undefined);
+    const judgeSetIfComplete = async (set: string, arm: Arm, seed: number) => {
+      const key = `${set}|${arm}|${seed}`;
+      if (judgedSets.has(key)) return;
+      const members = setMembers(allTasks, set);
+      const rows = members.map((m) => known.find((r) => r.taskId === m.id && r.arm === arm && r.seed === seed && r.status === "ok" && r.imagePath));
+      if (rows.some((r) => !r || !existsSync(r.imagePath!))) return;
+      const images = rows.map((r) => ({ id: r!.taskId, image: decodePng(readFileSync(r!.imagePath!)) }));
+      const j = await runJudge(() => judgeSet(set, arm, seed, images, { llm, model: judgeModel, shape }));
+      judgedSets.add(key);
+      await appendSetResult(setResultsFile, j);
+      log(`set ${set} ${arm} s${seed}: ${j.error ? `error: ${j.error}` : `score ${j.score}/5${j.outliers?.length ? `, off-style: ${j.outliers.join(", ")}` : ""}`}`);
+    };
     const todo = pendingJobs(jobs, existing, { retryFailed: Boolean(values["retry-failed"]), rerunStopReasons });
     log(`${jobs.length} jobs, ${jobs.length - todo.length} already done, ${todo.length} to run`);
     let stopping = false;
@@ -261,6 +300,8 @@ async function main(): Promise<void> {
         loopMaxRounds: maxRounds,
         timeoutMs,
         workDir,
+        ...(library && task.group === "icon" ? { library } : {}),
+        setReferences: setReferencesFor(task, job.arm, job.seed, allTasks, known, readImage),
         onProgress: (m) => {
           if (!/step \d+\/\d+/.test(m)) log(`  ${m}`);
         },
@@ -270,11 +311,13 @@ async function main(): Promise<void> {
         const timing = await comfyTiming(comfy, row);
         if (timing) row = { ...row, ...timing };
       }
+      known.push(row);
       if (row.status === "error") {
         log(`  failed: ${row.error?.class}: ${row.error?.message}`);
         await write(row);
         continue;
       }
+      if (task.set) inFlight.push(judgeSetIfComplete(task.set, job.arm, job.seed).catch((err) => log(`set ${task.set}: ${String(err)}`)));
       const queued = row.comfyQueueMs ? `, ${(row.comfyQueueMs / 1000).toFixed(0)} s queued behind other ComfyUI clients` : "";
       log(`  generated in ${(row.wallMs / 1000).toFixed(0)} s${queued}, ${row.rounds} round(s), ${row.stopReason ?? ""}, $${row.llm.costUsd.toFixed(4)}`);
       row.judgeViewPath = path.join(workDir, "judge-view.png");
@@ -282,6 +325,11 @@ async function main(): Promise<void> {
       // Grading overlaps with the next generation.
       const which: ("judge" | "judge2")[] = ["judge", ...(judge2Model && subset.has(task.id) ? (["judge2"] as const) : [])];
       inFlight.push(gradeAndWrite(row, which));
+    }
+    // Sets finished in an earlier run but never judged (for example after a crash).
+    for (const t of tasks) {
+      if (!t.set) continue;
+      for (const seed of seeds) for (const arm of arms) if (armApplies(arm, t)) inFlight.push(judgeSetIfComplete(t.set, arm, seed).catch(() => undefined));
     }
     await Promise.all(inFlight);
     await writeChain;
