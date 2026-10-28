@@ -42,6 +42,12 @@ import { LOCALE_LABEL, LOCALES, useI18n } from '../i18n';
 import type { Locale } from '../i18n';
 import type { Dict } from '../i18n/types';
 import { VisualCheckSettings } from './visual-check/VisualCheckSettings';
+import {
+  MediaLocalOnlyBlockedNote,
+  MediaLocalOnlySetting,
+  isProviderBlockedByLocalOnly,
+  mediaLocalOnlyBlockedChipClass,
+} from './media/MediaLocalOnlySetting';
 import { AgentIcon } from './AgentIcon';
 import { AgentDiagnosticRow } from './AgentDiagnosticRow';
 import { DeepSeekHarnessSetupDialog } from './DeepSeekHarnessSetupDialog';
@@ -7978,6 +7984,7 @@ function MediaProvidersSection({
           </button>
         ) : null}
       </div>
+      <MediaLocalOnlySetting cfg={cfg} setCfg={setCfg} />
       <div
         className="protocol-chips protocol-chips--providers media-provider-tabs"
         role="tablist"
@@ -7994,14 +8001,16 @@ function MediaProvidersSection({
               const statusLabel = connected
                 ? t('settings.mediaProviderConfigured')
                 : t('settings.mediaProviderUnset');
+              const blockedByLocalOnly = isProviderBlockedByLocalOnly(cfg, provider.id);
               return (
                 <button
                   key={provider.id}
                   type="button"
                   role="tab"
                   aria-selected={active}
-                  className={'protocol-chip' + (active ? ' active' : '')}
+                  className={'protocol-chip' + (active ? ' active' : '') + (blockedByLocalOnly ? ` ${mediaLocalOnlyBlockedChipClass}` : '')}
                   title={`${provider.label} · ${statusLabel}`}
+                  data-local-only-blocked={blockedByLocalOnly ? 'true' : undefined}
                   onClick={() => setActiveProviderId(provider.id)}
                 >
                   <span
@@ -8044,6 +8053,7 @@ function MediaProvidersSection({
               ) : null}
             </div>
           </div>
+          {isProviderBlockedByLocalOnly(cfg, activeProvider.id) ? <MediaLocalOnlyBlockedNote /> : null}
           {activeProvider.id === 'grok' ? <XaiOAuthControl /> : null}
           {activeRequiresCredentials ? (
             <div className="media-provider-detail-grid">

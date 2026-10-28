@@ -5819,6 +5819,9 @@ export interface Dict {
   'settings.visualCheckDesc': string;
   'settings.visualCheckRounds': string;
   'settings.visualCheckRoundsOff': string;
+  'settings.mediaLocalOnly': string;
+  'settings.mediaLocalOnlyHint': string;
+  'settings.mediaLocalOnlyBlocked': string;
   'settings.visualCheckModel': string;
   'settings.visualCheckModelHint': string;
   'settings.visualCheckModelAuto': string;

@@ -1,0 +1,14 @@
+.wrap {
+  margin: 12px 0 16px;
+}
+
+.blockedNote {
+  margin: 8px 0 0;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.blockedChip {
+  opacity: 0.6;
+}

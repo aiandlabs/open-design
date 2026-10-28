@@ -1,4 +1,5 @@
 import type {
+  MediaPolicyPrefs,
   VisualCheckPrefs,
   AgentInfo,
   AgentDiagnostic,
@@ -474,6 +475,9 @@ export interface AppConfig {
   defaultProjectLocationId?: string | null;
   // Settings → Instructions → Visual check. `rounds` 0 keeps the loop off.
   visualCheck?: VisualCheckPrefs;
+  // Settings → Media providers → "Local image generation only". Absent means
+  // on (MEDIA_LOCAL_ONLY_DEFAULT); see resolveMediaLocalOnly.
+  media?: MediaPolicyPrefs;
 }
 
 export interface TelemetryConfig {
