@@ -951,6 +951,53 @@ describe('SettingsDialog execution settings BYOK interactions', () => {
     );
   });
 
+  it.each([
+    {
+      shape: 'OpenAI',
+      initial: {
+        apiProtocol: 'openai',
+        baseUrl: 'https://api.openai.com/v1',
+        model: 'gpt-4o',
+        apiProviderBaseUrl: 'https://api.openai.com/v1',
+      },
+      tab: 'OpenAI',
+      preset: 'ai& — OpenAI',
+      baseUrl: 'https://api.aiand.com/v1',
+    },
+    {
+      shape: 'Anthropic',
+      initial: {},
+      tab: 'Anthropic',
+      preset: 'ai& — Anthropic',
+      baseUrl: 'https://api.aiand.com',
+    },
+  ] as const)('offers ai& as an $shape-compatible gateway preset', ({ initial, tab, preset, baseUrl }) => {
+    renderSettingsDialog(initial);
+
+    fireEvent.click(screen.getByRole('tab', { name: tab }));
+    selectGatewayPreset(preset);
+
+    expect(screen.getByRole('combobox', { name: 'Model' }).textContent).toContain(
+      'moonshotai/kimi-k3',
+    );
+    expect((screen.getByLabelText('Base URL') as HTMLInputElement).value).toBe(baseUrl);
+    expect(screen.getByRole('link', { name: 'Get key ↗' }).getAttribute('href')).toBe(
+      'https://console.aiand.com',
+    );
+  });
+
+  it.each([
+    ['ai& — OpenAI', 'https://api.aiand.com/v1'],
+    ['ai& — Anthropic', 'https://api.aiand.com'],
+  ])('offers %s as a BYOK provider chip', (title, baseUrl) => {
+    renderSettingsDialog();
+
+    fireEvent.click(screen.getByRole('tab', { name: title }));
+
+    expect(screen.getByRole('tab', { name: title }).getAttribute('aria-selected')).toBe('true');
+    expect((screen.getByLabelText('Base URL') as HTMLInputElement).value).toBe(baseUrl);
+  });
+
   it('keeps Anthropic-compatible gateway presets selectable', () => {
     renderSettingsDialog();
 

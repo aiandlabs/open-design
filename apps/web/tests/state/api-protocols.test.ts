@@ -43,4 +43,31 @@ describe('apiProtocols table consistency', () => {
     expect(atlasCloudProvider?.preferredModels).toContain('qwen/qwen3.5-flash');
     expect(atlasCloudProvider?.preferredModels).toContain('deepseek-ai/deepseek-v4-flash');
   });
+
+  it('keeps the ai& presets on one catalogue across both API shapes', () => {
+    const openai = KNOWN_PROVIDERS.find((provider) => provider.label === 'ai& — OpenAI');
+    const anthropic = KNOWN_PROVIDERS.find((provider) => provider.label === 'ai& — Anthropic');
+    const consoleLink = { host: 'console.aiand.com', url: 'https://console.aiand.com' };
+
+    expect(openai).toMatchObject({
+      protocol: 'openai',
+      baseUrl: 'https://api.aiand.com/v1',
+      apiKeyConsoleLink: consoleLink,
+    });
+    // Origin only: the Anthropic SDK, the daemon proxy and BYOK OpenCode
+    // each add /v1 before /messages.
+    expect(anthropic).toMatchObject({
+      protocol: 'anthropic',
+      baseUrl: 'https://api.aiand.com',
+      apiKeyConsoleLink: consoleLink,
+    });
+    expect(anthropic?.preferredModels).toEqual(openai?.preferredModels);
+    expect(openai?.preferredModels.slice(0, 5)).toEqual([
+      'moonshotai/kimi-k3',
+      'zai-org/glm-5.3-flash',
+      'qwen/qwen3.8-27b',
+      'deepseek-ai/deepseek-v4.1-flash',
+      'google/gemma-4-31b-it',
+    ]);
+  });
 });

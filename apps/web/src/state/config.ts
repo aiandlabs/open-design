@@ -130,6 +130,27 @@ export interface KnownProvider {
   requiresApiKey?: boolean;
 }
 
+// ai& (aiand.com) serves one catalogue behind both API shapes, so the
+// OpenAI-compatible and Anthropic-compatible entries share this list.
+// Vision-capable models come first.
+const AIAND_PREFERRED_MODELS = [
+  'moonshotai/kimi-k3',
+  'zai-org/glm-5.3-flash',
+  'qwen/qwen3.8-27b',
+  'deepseek-ai/deepseek-v4.1-flash',
+  'google/gemma-4-31b-it',
+  'qwen/qwen3.6-27b',
+  'zai-org/glm-5.3',
+  'deepseek-ai/deepseek-v4-pro',
+  'motif-technologies/motif-3',
+  'openai/gpt-oss-120b',
+];
+
+const AIAND_API_KEY_CONSOLE_LINK = {
+  host: 'console.aiand.com',
+  url: 'https://console.aiand.com',
+};
+
 // Some providers appear more than once because they expose both
 // Anthropic-compatible (/v1/messages) and OpenAI-compatible
 // (/v1/chat/completions) gateways. Keep those entries separate so the Settings
@@ -185,6 +206,15 @@ export const KNOWN_PROVIDERS: KnownProvider[] = [
     ],
   },
   {
+    // Anthropic SDKs append /v1/messages to this origin; the daemon proxy and
+    // the BYOK OpenCode runtime add the same /v1 segment.
+    label: 'ai& — Anthropic',
+    protocol: 'anthropic',
+    baseUrl: 'https://api.aiand.com',
+    preferredModels: AIAND_PREFERRED_MODELS,
+    apiKeyConsoleLink: AIAND_API_KEY_CONSOLE_LINK,
+  },
+  {
     label: 'OpenAI',
     protocol: 'openai',
     baseUrl: 'https://api.openai.com/v1',
@@ -206,6 +236,13 @@ export const KNOWN_PROVIDERS: KnownProvider[] = [
       host: 'atlascloud.ai',
       url: 'https://atlascloud.ai/?utm_source=open_design&utm_medium=provider_preset&utm_campaign=atlascloud_byok',
     },
+  },
+  {
+    label: 'ai& — OpenAI',
+    protocol: 'openai',
+    baseUrl: 'https://api.aiand.com/v1',
+    preferredModels: AIAND_PREFERRED_MODELS,
+    apiKeyConsoleLink: AIAND_API_KEY_CONSOLE_LINK,
   },
   {
     label: 'OpenRouter',
@@ -527,6 +564,8 @@ const BYOK_PROVIDER_PRESET_SPECS = [
   { id: 'anthropic', title: 'Anthropic', providerLabel: 'Anthropic (Claude)' },
   { id: 'openai', title: 'OpenAI', providerLabel: 'OpenAI' },
   { id: 'atlascloud', title: 'Atlas Cloud', providerLabel: 'Atlas Cloud' },
+  { id: 'aiand-openai', title: 'ai& — OpenAI', providerLabel: 'ai& — OpenAI' },
+  { id: 'aiand-anthropic', title: 'ai& — Anthropic', providerLabel: 'ai& — Anthropic' },
   { id: 'google-ai-studio', title: 'Google Gemini', providerLabel: 'Google Gemini' },
   { id: 'ollama', title: 'Ollama Cloud', providerLabel: 'Ollama Cloud (managed)' },
   { id: 'azure', title: 'Azure OpenAI', providerLabel: 'Azure OpenAI' },

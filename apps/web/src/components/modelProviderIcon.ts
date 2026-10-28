@@ -29,7 +29,7 @@ export function modelProviderIconSrc(
   if (vendor.includes('xai') || vendor.includes('grok'))
     return '/model-icons/x.svg';
   if (vendor.includes('deepseek')) return '/agent-icons/deepseek.svg';
-  if (vendor.includes('glm') || vendor.includes('zhipu'))
+  if (vendor.includes('glm') || vendor.includes('zhipu') || vendor === 'zai-org')
     return '/agent-icons/glm.svg';
   if (vendor.includes('qwen')) return '/agent-icons/qwen.svg';
   if (vendor.includes('kimi') || vendor.includes('moonshot'))
@@ -41,5 +41,6 @@ export function modelProviderIconSrc(
   if (vendor.includes('doubao') || vendor.includes('bytedance'))
     return '/model-icons/bytedance.svg';
   if (vendor.includes('openrouter')) return '/model-icons/openrouter.svg';
+  if (vendor === 'aiand') return '/model-icons/aiand.svg';
   return null;
 }

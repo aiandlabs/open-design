@@ -347,6 +347,10 @@ describe('API proxy routes', () => {
       'https://api.openai.com/v1/chat/completions',
     ],
     [
+      'https://api.aiand.com/v1',
+      'https://api.aiand.com/v1/chat/completions',
+    ],
+    [
       'https://api.openai.com/',
       'https://api.openai.com/v1/chat/completions',
     ],
@@ -393,6 +397,10 @@ describe('API proxy routes', () => {
     [
       'https://token-plan-cn.xiaomimimo.com/anthropic',
       'https://token-plan-cn.xiaomimimo.com/anthropic/v1/messages',
+    ],
+    [
+      'https://api.aiand.com',
+      'https://api.aiand.com/v1/messages',
     ],
     [
       'https://proxy.example.test/v1/',

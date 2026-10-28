@@ -470,6 +470,40 @@ describe('SettingsDialog API protocol switching', () => {
     });
   });
 
+  it.each([
+    {
+      from: 'openai',
+      fromBaseUrl: 'https://api.aiand.com/v1',
+      to: 'anthropic',
+      toBaseUrl: 'https://api.aiand.com',
+    },
+    {
+      from: 'anthropic',
+      fromBaseUrl: 'https://api.aiand.com',
+      to: 'openai',
+      toBaseUrl: 'https://api.aiand.com/v1',
+    },
+  ] as const)(
+    'keeps ai& selected when switching from its $from shape to its $to shape',
+    ({ from, fromBaseUrl, to, toBaseUrl }) => {
+      // No saved config for the target shape, so the sibling preset applies.
+      const aiand: AppConfig = {
+        ...baseConfig,
+        apiProtocol: from,
+        baseUrl: fromBaseUrl,
+        model: 'moonshotai/kimi-k3',
+        apiProviderBaseUrl: fromBaseUrl,
+      };
+
+      expect(switchApiProtocolConfig(aiand, to)).toMatchObject({
+        apiProtocol: to,
+        baseUrl: toBaseUrl,
+        model: 'moonshotai/kimi-k3',
+        apiProviderBaseUrl: toBaseUrl,
+      });
+    },
+  );
+
   it('auto-fills Google defaults when switching from a selected known provider', () => {
     expect(switchApiProtocolConfig(baseConfig, 'google')).toMatchObject({
       mode: 'api',

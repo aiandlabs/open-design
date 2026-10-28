@@ -15,6 +15,13 @@ describe('modelProviderIconSrc', () => {
     );
   });
 
+  it('maps ai& catalogue ids to the upstream vendor mark and aiand/ ids to the ai& mark', () => {
+    expect(modelProviderIconSrc('zai-org/glm-5.3-flash')).toBe('/agent-icons/glm.svg');
+    expect(modelProviderIconSrc('moonshotai/kimi-k3')).toBe('/agent-icons/kimi.svg');
+    expect(modelProviderIconSrc('deepseek-ai/deepseek-v4.1-flash')).toBe('/agent-icons/deepseek.svg');
+    expect(modelProviderIconSrc('aiand/some-model')).toBe('/model-icons/aiand.svg');
+  });
+
   it('matches on provider-name substrings so aliased prefixes still resolve', () => {
     // Some catalogs prefix with the vendor's brand name rather than the bare
     // provider slug (e.g. a "claude" or "gpt" prefix instead of "anthropic"/"openai").

@@ -189,6 +189,11 @@ describe('byok-opencode runtime config', () => {
       baseUrl: 'https://token-plan-cn.xiaomimimo.com/anthropic',
       expectedBaseUrl: 'https://token-plan-cn.xiaomimimo.com/anthropic/v1',
     },
+    {
+      name: 'ai&',
+      baseUrl: 'https://api.aiand.com',
+      expectedBaseUrl: 'https://api.aiand.com/v1',
+    },
   ])(
     'adds the Anthropic API version to the $name compatibility base URL',
     ({ baseUrl, expectedBaseUrl }) => {
