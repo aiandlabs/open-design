@@ -184,6 +184,7 @@ import {
   scanRunEventsForRetrySideEffects,
 } from './runtimes/run-lifecycle-analytics.js';
 import { resolveByokModelLimits } from './integrations/byok-model-limits.js';
+import { withOpenCodeHeadlessRunConfig } from './runtimes/opencode-permissions.js';
 import {
   OUTPUT_LIMIT_NO_DELIVERABLE_MESSAGE,
   runEndedOnOutputLimitWithoutDeliverable,
@@ -13974,9 +13975,11 @@ export async function startServer({
           oauthTokensForSpawn,
           {
             allowedDirectories: [effectiveCwd, ...extraAllowedDirs],
-            ...(byokOpenCodeProvider
-              ? { extraConfig: byokOpenCodeProvider.config }
-              : {}),
+            ...(isOpenCodeContent
+              ? { extraConfig: withOpenCodeHeadlessRunConfig(byokOpenCodeProvider?.config) }
+              : byokOpenCodeProvider
+                ? { extraConfig: byokOpenCodeProvider.config }
+                : {}),
           },
         );
       } catch (err) {

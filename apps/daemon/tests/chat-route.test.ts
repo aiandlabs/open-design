@@ -785,7 +785,13 @@ process.stdin.on('end', () => {
           permission?: {
             external_directory?: Record<string, string>;
           };
+          experimental?: { continue_loop_on_deny?: boolean };
         };
+
+        // A headless run auto-rejects any permission it cannot grant. Without
+        // this flag the bundled OpenCode ends the whole turn on that rejection,
+        // so one refused read leaves the run "succeeded" with no deliverable.
+        expect(parsed.experimental?.continue_loop_on_deny).toBe(true);
 
         const externalDirectory = parsed.permission?.external_directory ?? {};
         const cwdAliases = new Set([effectiveCwd]);

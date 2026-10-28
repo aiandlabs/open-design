@@ -1,3 +1,6 @@
+/** A standalone control line whose key attribute is absent or not a hex key. */
+const UNKEYED_CONTROL_LINE = /^ {0,3}<od-production-ready(?:\s+key="(?![a-f0-9]+")[^"<>]*")?\s*\/?>\s*$/;
+
 /** A terminal assistant control signal. Canonical output remains a self-closing line. */
 export class ProductionMarkerStream {
   private pending = '';
@@ -72,6 +75,16 @@ export class ProductionMarkerStream {
         this.lastWasMarker = true;
       }
       if (match) return prefix.trim() ? prefix + (/\r?\n$/.exec(line)?.[0] ?? '') : '';
+      // A model that ends a finished plan with the control line but does not
+      // copy this turn's key (no key, the instruction's `current-turn-key`
+      // placeholder, an invented label) still states production readiness.
+      // Accept it only as a trusted standalone line; a different hex key is a
+      // stale turn's and stays refused, and `ready` still requires it last.
+      if (this.lineTrusted && UNKEYED_CONTROL_LINE.test(line)) {
+        this.matches++;
+        this.lastWasMarker = true;
+        return '';
+      }
       // Preserve display-only cleanup of malformed control lines. They do not authorize production.
       if (/^ {0,3}<?od-production-ready\b/i.test(line)) return '';
     }

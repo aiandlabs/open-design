@@ -83,6 +83,41 @@ describe('plan continuation marker', () => {
     for (const char of text) stream.push(char);
     expect(stream.finish().parsed.productionReady).toBe(false);
   });
+  // Observed from moonshotai/kimi-k3 in the CUJ assessment: the model ended a
+  // finished plan with the control line but did not copy this turn's key, so
+  // production never started and the user saw "Done" with no design.
+  it.each([
+    ['no key', `Plan: build the deck.\n<od-production-ready />`],
+    ['no key, not self-closing', `Plan: build the deck.\n<od-production-ready>\n`],
+    ['the instruction placeholder', `Plan: build the deck.\n<od-production-ready key="current-turn-key" />`],
+    ['an invented label', `Plan: build the deck.\n\n<od-production-ready key="plan-build" />\n`],
+  ])('accepts a standalone final control line whose key was not copied: %s', (_name, text) => {
+    for (let split = 0; split <= text.length; split++) {
+      const stream = createOdNextRunProtocol(null, key);
+      const visible = stream.push(text.slice(0, split)) + stream.push(text.slice(split));
+      const result = stream.finish();
+      expect(result.parsed.productionReady).toBe(true);
+      expect(visible + result.visibleTail).not.toContain('od-production-ready');
+    }
+  });
+  it.each([
+    `Plan.<od-production-ready />`, // Glued to prose: only an exact key may do that.
+    `Plan.\n<od-production-ready />\nOne more question.`,
+    `Plan.\n> <od-production-ready />`,
+    `Plan.\n\`\`\`\n<od-production-ready />\n\`\`\``,
+    `Plan.\n    <od-production-ready key="current-turn-key" />`,
+    `Plan.\n<od-production-ready key="0000" />`, // A different hex key is a stale turn's.
+    `<od-production-ready />`, // A signal alone is not a plan.
+  ])('keeps a keyless control line from authorizing a glued, quoted, stale or non-terminal signal: %s', text => {
+    const stream = createOdNextRunProtocol(null, key);
+    for (const char of text) stream.push(char);
+    expect(stream.finish().parsed.productionReady).toBe(false);
+  });
+  it('does not authorize a keyless control line from raw stdout', () => {
+    const stream = createOdNextRunProtocol(null, key);
+    stream.push('Plan.\n<od-production-ready />', false);
+    expect(stream.finish().parsed.productionReady).toBe(false);
+  });
   it.each([`计划。${marker}`, `计划。\nod-production-ready key="${key}"`])(
     'does not authorize relaxed syntax from raw stdout', text => {
       const stream = createOdNextRunProtocol(null, key);

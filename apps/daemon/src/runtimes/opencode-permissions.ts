@@ -45,3 +45,31 @@ export function appendOpenCodeWorkspaceDir(
   if (typeof cwd !== 'string' || cwd.length === 0) return;
   args.push(OPENCODE_WORKSPACE_DIR_FLAG, cwd);
 }
+
+/**
+ * Run-scoped OpenCode config that every headless run carries.
+ *
+ * A headless `opencode run` cannot ask the user, so it auto-rejects any
+ * permission the daemon did not grant up front (an `external_directory` read
+ * the prompt suggested, or a path the model mistyped). The OpenCode companion
+ * that byok-opencode resolves ends the whole agent loop on a rejection unless
+ * `experimental.continue_loop_on_deny` is set: the run exits 0 right after
+ * that tool call, mid-plan, with no deliverable. With the flag, the rejection
+ * is an ordinary tool error and the model carries on without that action.
+ * Newer OpenCode builds continue on their own and accept the key.
+ *
+ * Merged under any run-scoped provider config; an `experimental` block the
+ * caller passes keeps its other keys.
+ */
+export function withOpenCodeHeadlessRunConfig(
+  extraConfig: Record<string, unknown> = {},
+): Record<string, unknown> {
+  const experimental =
+    extraConfig.experimental && typeof extraConfig.experimental === 'object' && !Array.isArray(extraConfig.experimental)
+      ? extraConfig.experimental as Record<string, unknown>
+      : {};
+  return {
+    ...extraConfig,
+    experimental: { ...experimental, continue_loop_on_deny: true },
+  };
+}
