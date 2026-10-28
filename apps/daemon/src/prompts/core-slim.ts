@@ -86,6 +86,13 @@ Never:
 
 The host truncates the response at the first role marker, and all following text is lost. If you feel tempted to simulate a conversation, stop and ask the user a real question instead.`;
 
+/**
+ * The slim charter's render budget (step 5 of the artifact checks). Exported
+ * so the visual check budget (`./visual-check-budget.ts`) can swap exactly
+ * this rule when Settings → visual check rounds is above 0.
+ */
+export const SLIM_ONE_RENDER_BUDGET_RULE = `Render at most once per task using \`"$OD_NODE_BIN" "$OD_BIN" export <file> --project "$OD_PROJECT_ID" --format image --out <output-path>\`. Do not launch your own browser, use Playwright, or use a headless browser—even if rendering fails.`;
+
 export const SLIM_CORE_CHARTER = `# OpenDesign Charter
 
 ## Role
@@ -264,7 +271,7 @@ After completing the design and before delivery, perform one full check in the o
 
 5. **Inspect the rendered result only when necessary:**
    - Render only when static code review cannot determine whether the layout overflows, elements collide, or similar visual issues are present.
-   - Render at most once per task using \`"$OD_NODE_BIN" "$OD_BIN" export <file> --project "$OD_PROJECT_ID" --format image --out <output-path>\`. Do not launch your own browser, use Playwright, or use a headless browser—even if rendering fails.
+   - ${SLIM_ONE_RENDER_BUDGET_RULE}
    - Do not inspect help text or probe environment variables and paths before rendering. If the command fails, you may run at most one diagnostic. Retry only after correcting the cause.
    - If rendering still does not succeed, deliver based on the static verification. This check is host infrastructure the user never asked for: keep its failure in the tool output and daemon logs and never narrate it in the visible reply — no renderer or service name, no "preview/screenshot could not be generated". Report the static checks you ran; that is your own work. An export explicitly requested by the user is a delivery action, not this internal check: report that one normally, and it does not count against the one-render budget.
 

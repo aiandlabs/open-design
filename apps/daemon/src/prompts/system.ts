@@ -31,6 +31,7 @@ import { COMMENT_IDENTITY_EDIT_DIRECTIVE } from '@open-design/contracts/prompts/
  * the Anthropic path sends as `system`.
  */
 import { renderOfficialDesignerPrompt } from './official-system.js';
+import { applyVisualCheckBudget } from './visual-check-budget.js';
 import { renderDiscoveryAndPhilosophy, renderSharedFramesBlock } from './discovery.js';
 import {
   PLATFORM_CONTRACTS_BLOCK,
@@ -897,6 +898,11 @@ export interface ComposeInput {
   // The ComfyUI media provider is configured, so the media contract tells the
   // agent when to use comfyui-agent / comfyui-workflow.
   comfyuiConfigured?: boolean | undefined;
+  // Settings → visual check rounds (0..3). Above 0, filesystem runs swap the
+  // one-render budget for the bounded `od visual-check` rule on both sides of
+  // the fork (see ./visual-check-budget.ts and the OD Next
+  // `visual-check-budget` block). 0 or absent leaves every prompt unchanged.
+  visualCheckRounds?: number | undefined;
 }
 
 export function composeSystemPrompt({
@@ -942,6 +948,7 @@ export function composeSystemPrompt({
   mediaHintSignal,
   platformHintSignal,
   comfyuiConfigured,
+  visualCheckRounds,
 }: ComposeInput): string {
   // ── FORK POINT: two independent prompt implementations ──────────────────
   // Everything below this early return is the legacy stack; OD Next runs never
@@ -967,6 +974,7 @@ export function composeSystemPrompt({
       locale,
       deckIntent: odNextStrategyRecipe.taskType !== 'ppt' && freeformDeckSignal === true,
       deckFrameworkMode,
+      ...(visualCheckRounds ? { visualCheckRounds } : {}),
       metadata,
       template,
       designSystemBody,
@@ -1551,7 +1559,7 @@ export function composeSystemPrompt({
         "stop and ask the user a real question instead.",
   );
 
-  return parts.join('');
+  return applyVisualCheckBudget(parts.join(''), visualCheckRounds, resolvedExecutionProfile);
 }
 
 /**

@@ -14,6 +14,7 @@ import {
   type DeckFrameworkMode,
 } from './deck-framework.js';
 import type { OdNextDeviceFrameContextV2 } from './od-next-device-frame.js';
+import { renderVisualCheckBudgetRule } from './visual-check.js';
 
 import type {
   OdNextPromptBundleHeadV2,
@@ -87,6 +88,16 @@ export interface OdNextStrategyStableRequestContextV2 {
    * existing deck HTML keep their own scaffold and rely on the host bridge.
    */
   deckFrameworkMode?: DeckFrameworkMode | undefined;
+  /**
+   * Settings → visual check rounds. Above 0, filesystem runs get a
+   * `visual-check-budget` instruction block that authorizes up to this many
+   * `od visual-check` runs per task, which overrides the core strategy's
+   * deliver-without-post-generation-rendering default for this run only.
+   * 0 or absent adds no bytes. The rule text has one source,
+   * `renderVisualCheckBudgetRule` in `visual-check.ts`, shared with the
+   * legacy charters.
+   */
+  visualCheckRounds?: number | undefined;
   metadata?: object | undefined;
   template?: {
     id?: string | undefined;
@@ -557,6 +568,13 @@ export function composeOdNextStrategyStableRequestContextV2(
       : renderDeckFrameworkDirective(executionProfile);
     blocks.push(
       `<od-next-context kind="instruction" name="deck-framework">\n${escaped("Apply this host protocol only when creating or editing an HTML deck. Its presence does not request a deck or override the user's requested deliverable.\n\n" + directive)}\n</od-next-context>`,
+    );
+  }
+  // Text-artifact runs have no shell, so they cannot run `od visual-check`.
+  if (executionProfile === 'filesystem') {
+    instructionText(
+      'visual-check-budget',
+      renderVisualCheckBudgetRule(context.visualCheckRounds ?? 0),
     );
   }
   if (context.metadata) {

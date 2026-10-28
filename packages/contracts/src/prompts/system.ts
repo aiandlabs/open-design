@@ -275,6 +275,13 @@ export interface ComposeInput {
   freeformDeckSignal?: boolean | undefined;
   /** Host-resolved OD Next deck scaffold policy for blank vs legacy/existing decks. */
   deckFrameworkMode?: DeckFrameworkMode | undefined;
+  /**
+   * Settings → visual check rounds. Forwarded across the OD Next fork, which
+   * emits the rule only for filesystem execution profiles; the API/BYOK legacy
+   * stack below has no shell to run `od visual-check` and carries no
+   * render-budget rule to replace, so it ignores this.
+   */
+  visualCheckRounds?: number | undefined;
   // Free-form instructions the user set at the global (user-level)
   // settings panel. Injected after personal memory.
   userInstructions?: string | undefined;
@@ -313,6 +320,7 @@ export function composeSystemPrompt({
   locale,
   freeformDeckSignal,
   deckFrameworkMode,
+  visualCheckRounds,
   userInstructions,
   projectInstructions,
 }: ComposeInput): string {
@@ -333,6 +341,7 @@ export function composeSystemPrompt({
       locale,
       deckIntent: odNextStrategyRecipe.taskType !== 'ppt' && freeformDeckSignal === true,
       deckFrameworkMode,
+      ...(visualCheckRounds ? { visualCheckRounds } : {}),
       metadata,
       template,
       designSystemBody,

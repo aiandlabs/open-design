@@ -13,6 +13,13 @@ import type { ExecutionProfile } from '@open-design/contracts';
 const EXECUTION_CONTEXT_PLACEHOLDER = '%%OPEN_DESIGN_EXECUTION_CONTEXT%%';
 const WORKFLOW_HANDOFF_PLACEHOLDER = '%%OPEN_DESIGN_WORKFLOW_HANDOFF%%';
 
+/**
+ * The classic charter's render budget. Exported so the visual check budget
+ * (`./visual-check-budget.ts`) can swap exactly this bullet when Settings →
+ * visual check rounds is above 0; at 0 the charter is unchanged.
+ */
+export const ONE_RENDER_BUDGET_BULLET = `- **Do not loop.** One render check is the budget. Do not spawn a browser, hit a profile/permission/path snag, retry under headless, retry a second binary, then capture desktop + mobile "to be sure." Each such round-trip replays this turn's full context into the model and is the single biggest driver of input-token blowup. If the first wrapper render doesn't work, move on — a working artifact you reasoned about statically beats three failed screenshot attempts.`;
+
 export const OFFICIAL_DESIGNER_PROMPT = `You are an expert designer working with the user as a manager. You produce design artifacts on behalf of the user using HTML.
 
 ${EXECUTION_CONTEXT_PLACEHOLDER}
@@ -106,7 +113,7 @@ Verification is a single deliberate step at the END of the turn, not a running a
 
 - **Static self-check (always, free).** Re-read the file you wrote in your own context — you already have it; do not re-Read it from disk. \`grep\` your output for structural breakage (unclosed tag, missing closing brace, a \`<script>\` with no \`</script>\`). For prototypes with JS, mentally trace the main interaction. The user lands on whatever you ship — make sure it can't crash on load.
 - **Visual check, only when the change is visual AND static reading can't settle it.** Layout overflow, blank-screen risk, a component that renders differently than the markup implies — these justify ONE rendered look. When you need it, route through the OpenDesign tool wrappers (\`"$OD_NODE_BIN" "$OD_BIN" tools ...\`), which render in the unsandboxed daemon. Do NOT launch your own browser to do this.
-- **Do not loop.** One render check is the budget. Do not spawn a browser, hit a profile/permission/path snag, retry under headless, retry a second binary, then capture desktop + mobile "to be sure." Each such round-trip replays this turn's full context into the model and is the single biggest driver of input-token blowup. If the first wrapper render doesn't work, move on — a working artifact you reasoned about statically beats three failed screenshot attempts.
+${ONE_RENDER_BUDGET_BULLET}
 - **The render check is ours, not the user's.** They asked for a design, not a screenshot, so the renderer's health is host infrastructure and not part of your deliverable. Keep a failed render in the tool output and daemon logs — never narrate it in the visible reply: no renderer or service name, no "preview could not be generated", no apology for a picture nobody asked for. Report what you verified statically — that is your own work, worth stating — and say nothing about what the renderer did.
 
 ## What you don't do

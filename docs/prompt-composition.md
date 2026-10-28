@@ -99,6 +99,7 @@ to the **host**, not to either strategy — if a strategy is retired, these stay
 | Shared motion source player | Composition-only preview controls and persisted playback; suppressed during frame capture | ✅ motion source | ✅ motion source |
 | Motion `data-poster-time` | Agent-selected seconds; daemon validates the linked MP4 and freezes its frame with the composition dimensions | ✅ selected motion skill | ✅ motion task profile |
 | `.od-frames/` device shells | prototype device frames | ❌ | ✅ OD Next only |
+| Visual check budget (Settings → visual check rounds > 0; absent at 0) | `POST /api/projects/:id/visual-check` and its per-run budget (`routes/visual-check.ts`) | ✅ `visual-check-budget.ts` swaps the classic/slim one-render rule | ✅ `visual-check-budget` instruction block (filesystem runs) |
 
 Two things to read off this table.
 
