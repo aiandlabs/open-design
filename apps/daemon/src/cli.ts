@@ -25,6 +25,7 @@ import { EXPORT_FORMATS, EXPORT_IMAGE_FORMATS, mediaFailureNextStep, parseApiFai
 import type { ArtifactLintFinding, LintArtifactCliResultEnvelope, LintArtifactResponse, LintFailOn } from '@open-design/contracts';
 import { buildExportCliRequestBody, buildExportCliResultEnvelope, resolveExportCliDeckMode } from './export-cli-request.js';
 import { exportRoutePath } from './export-cli-routing.js';
+import { runVisualCheckCommand } from './cli-visual-check.js';
 import {
   AGENT_SLUGS,
   isAgentSlug,
@@ -445,6 +446,7 @@ const SUBCOMMAND_MAP = {
   diagnostics: runDiagnostics,
   export: runExport,
   lint: runLint,
+  'visual-check': runVisualCheck,
   status: runStatus,
   version: runVersion,
   'whats-new': runWhatsNew,
@@ -919,6 +921,19 @@ async function runExport(args) {
   console.log(`wrote ${out} (${buffer.length} bytes)`);
 }
 
+// `od visual-check` lives in ./cli-visual-check.ts; this passes it the shared
+// CLI helpers, which cannot be imported because cli.ts is the process entry.
+async function runVisualCheck(args) {
+  return runVisualCheckCommand(args, {
+    parseFlags,
+    positionalArgs,
+    cliDaemonBaseUrl,
+    surfaceFetchError,
+    structuredHttpFailure,
+    readTextFile: (pathOrDash) => readPromptFromFlags({ 'prompt-file': pathOrDash }).then((text) => text ?? ''),
+  });
+}
+
 const LINT_STRING_FLAGS = new Set(['daemon-url', 'file', 'html-file', 'fail-on']);
 const LINT_BOOLEAN_FLAGS = new Set(['help', 'h', 'json', 'agent-message']);
 const LINT_FAIL_ON_VALUES = ['p0', 'p1', 'p2', 'none'];
@@ -1246,6 +1261,11 @@ function printRootHelp() {
       Programmatically export an HTML/deck artifact to HTML, PDF, image, or PPTX
       (no model/agent calls). Mirrors the web Download menu; rasterization uses
       the desktop runtime's bundled Chromium.
+
+  od visual-check <file> [--brief <text>|--prompt-file <path|->] [--viewport desktop|mobile|both] [--json]
+      Render an HTML file to PNG and grade it with an ai& vision model:
+      verdict plus pass/fail, evidence, and a repair hint per requirement.
+      Mirrors the file preview's "Check with vision model" action.
 
   od lint <file.html|-> [--fail-on <p0|p1|p2|none>] [--json]
       Run the daemon's anti-slop artifact linter against an HTML file or stdin
