@@ -1,0 +1,18 @@
+{
+  "comfyui": {
+    "repo": "https://github.com/comfyanonymous/ComfyUI.git",
+    "commit": "79cf64c21a1dba50749945ba9fe2e3a692f45438"
+  },
+  "models": [
+    {
+      "id": "sdxl-base-1.0",
+      "folder": "checkpoints",
+      "file": "sd_xl_base_1.0.safetensors",
+      "url": "https://huggingface.co/stabilityai/stable-diffusion-xl-base-1.0/resolve/main/sd_xl_base_1.0.safetensors",
+      "sha256": "31e35c80fc4829d14f90153f4c74cd59c90b779f6afe05a74cd6120b893f7e5b",
+      "license": "CreativeML Open RAIL++-M",
+      "commercialUse": true,
+      "default": true
+    }
+  ]
+}
