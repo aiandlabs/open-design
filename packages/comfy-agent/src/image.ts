@@ -468,9 +468,16 @@ export function decontaminateMatte(img: RgbaImage, backdrop: Rgb): RgbaImage {
 }
 
 export type MatteResidue = {
-  /** Fraction of edge pixels (visible, within 2 px of transparency) whose colour is near the backdrop. */
+  /**
+   * Fraction of edge pixels (visible, within 2 px of transparency) whose colour
+   * is near the backdrop, above the subject's own interior rate.
+   */
   fringe: number;
-  /** Fraction of all visible pixels whose colour is near the backdrop: leftover backdrop, floor or shadow. */
+  /**
+   * Fraction of visible pixels in the outer band (within 8 px of transparency)
+   * that are near the backdrop colour, above the subject's own interior rate,
+   * over all visible pixels: leftover backdrop, floor or shadow.
+   */
   backdropTinted: number;
   /**
    * Fraction of visible pixels that are partly transparent (16 ≤ alpha < 224)
@@ -484,19 +491,27 @@ export type MatteResidue = {
 /**
  * Measure what a matting model left behind around a subject rendered on a
  * plain backdrop. A clean matte has no backdrop-coloured edge ring, no
- * backdrop-coloured patches, and partial alpha only in a thin edge band. The
- * planner picks a backdrop far from the subject's colours, so subject pixels
- * near the backdrop colour are residue, not subject.
+ * backdrop-coloured patches, and partial alpha only in a thin edge band.
+ *
+ * Leftover backdrop can only sit near the cut-out's edge. A subject can still
+ * share colours with the backdrop (lavender shading on a grey backdrop), so
+ * the rate of backdrop-coloured pixels in the subject's deep interior, where
+ * no backdrop can be left, is the baseline: only the edge and outer band in
+ * excess of it count as residue.
  */
 export function matteResidue(img: RgbaImage, backdrop: Rgb, maxDistance = 0.12): MatteResidue {
   const { width: w, height: h, data } = img;
-  const visibleAt = (x: number, y: number) => x >= 0 && y >= 0 && x < w && y < h && data[(y * w + x) * 4 + 3]! >= 16;
   const ring = 2;
+  const band = 8;
+  const dist = distanceToTransparent(img, band + 1);
   let visible = 0;
   let partial = 0;
-  let tinted = 0;
   let edge = 0;
   let edgeTinted = 0;
+  let outer = 0;
+  let outerTinted = 0;
+  let interior = 0;
+  let interiorTinted = 0;
   for (let y = 0; y < h; y += 1) {
     for (let x = 0; x < w; x += 1) {
       const i = (y * w + x) * 4;
@@ -504,29 +519,60 @@ export function matteResidue(img: RgbaImage, backdrop: Rgb, maxDistance = 0.12):
       if (a < 16) continue;
       visible += 1;
       const near = colorDistance({ r: data[i]!, g: data[i + 1]!, b: data[i + 2]! }, backdrop) <= maxDistance;
-      if (near) tinted += 1;
-      let onEdge = false;
-      for (let dy = -ring; dy <= ring && !onEdge; dy += 1) {
-        for (let dx = -ring; dx <= ring; dx += 1) {
-          if ((dx || dy) && !visibleAt(x + dx, y + dy)) {
-            onEdge = true;
-            break;
-          }
-        }
-      }
-      if (onEdge) {
+      const d = dist[y * w + x]!;
+      if (d <= ring) {
         edge += 1;
         if (near) edgeTinted += 1;
       } else if (a < 224) {
         partial += 1;
       }
+      if (d <= band) {
+        outer += 1;
+        if (near) outerTinted += 1;
+      } else {
+        interior += 1;
+        if (near) interiorTinted += 1;
+      }
     }
   }
+  const baseline = interior ? interiorTinted / interior : 0;
   return {
-    fringe: edge ? edgeTinted / edge : 0,
-    backdropTinted: visible ? tinted / visible : 0,
+    fringe: edge ? Math.max(0, edgeTinted / edge - baseline) : 0,
+    backdropTinted: visible ? Math.max(0, outerTinted - baseline * outer) / visible : 0,
     haze: visible ? partial / visible : 0,
   };
+}
+
+/**
+ * Chessboard distance from each pixel to the nearest transparent pixel
+ * (alpha < 16) or the image border, capped at `cap`. Two passes.
+ */
+function distanceToTransparent(img: RgbaImage, cap: number): Uint16Array {
+  const { width: w, height: h, data } = img;
+  const d = new Uint16Array(w * h);
+  for (let y = 0; y < h; y += 1) {
+    for (let x = 0; x < w; x += 1) {
+      const k = y * w + x;
+      if (data[k * 4 + 3]! < 16) continue;
+      let m = cap;
+      if (x > 0) m = Math.min(m, d[k - 1]! + 1, y > 0 ? d[k - w - 1]! + 1 : 1);
+      else m = 1;
+      if (y > 0) m = Math.min(m, d[k - w]! + 1, x < w - 1 ? d[k - w + 1]! + 1 : 1);
+      else m = 1;
+      d[k] = m;
+    }
+  }
+  for (let y = h - 1; y >= 0; y -= 1) {
+    for (let x = w - 1; x >= 0; x -= 1) {
+      const k = y * w + x;
+      if (!d[k]) continue;
+      let m = d[k]!;
+      m = x < w - 1 ? Math.min(m, d[k + 1]! + 1, y < h - 1 ? d[k + w + 1]! + 1 : 1) : 1;
+      m = y < h - 1 ? Math.min(m, d[k + w]! + 1, x > 0 ? d[k + w - 1]! + 1 : 1) : 1;
+      d[k] = Math.min(d[k]!, m);
+    }
+  }
+  return d;
 }
 
 /**

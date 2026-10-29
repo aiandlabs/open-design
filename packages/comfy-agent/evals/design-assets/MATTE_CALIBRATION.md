@@ -58,3 +58,14 @@ matte has no such tint.
 **Status:** these are mattes of renders on a chroma key. The new flow renders
 on white, mid-grey or black. Re-check the limits on the first live rounds of
 the new flow: the `matting` arm of the eval records them.
+
+## Revision: subject colours close to the backdrop (2026-10-29)
+
+The first live rounds of the new flow showed a false failure. A lavender bell on the mid-grey backdrop (`#808080`) failed with fringe 0.11 and backdrop-tinted 0.132, but its cut-out was clean on black and on magenta. The cause: the bell's own shading is near the backdrop colour, and the check counted those subject pixels as residue. The failure cost one extra round.
+
+`matteResidue()` now takes a baseline from the subject's deep interior, the pixels more than 8 px from transparency, where no backdrop can be left. Fringe is the edge rate above that baseline. Backdrop-tinted counts only the outer 8 px band, above the same baseline. The limits are unchanged.
+
+* The live bell now measures fringe 0.005 and backdrop-tinted 0. Before, it failed.
+* The new measures can only be lower than the old ones, so no round that passed before fails now.
+* Of the 5 calibration failures, round 37 (an edge line) still fails, and round 0 still fails on haze. Rounds 1, 2 and 92 now pass. Their subject is drawn in the key colour (a green lantern, a man in a green suit, a green leaf on green). That is a content defect for the critic, not leftover backdrop. With matting, the planner picks a backdrop that contrasts with the subject.
+* The masks were not kept, so these results come from the reasoning above and the recorded measures, not from a rerun.

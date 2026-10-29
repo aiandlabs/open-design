@@ -20,6 +20,7 @@ import {
   referenceSimilarity,
   resize,
   toHexColor,
+  type Rgb,
   type RgbaImage,
 } from "../src/image.js";
 import { ImageFormatError } from "../src/errors.js";
@@ -290,6 +291,30 @@ describe("matte refinement and residue", () => {
     const r = matteResidue(mattedDisc(64, 20, { width: 2, color: { r: 20, g: 20, b: 120 } }), grey);
     expect(r.fringe).toBe(0);
     expect(r.backdropTinted).toBe(0);
+  });
+
+  /** A disc whose own shading is backdrop-coloured on every third row, as a grey-ish subject on a grey backdrop. */
+  function stripedDisc(ring?: { width: number; color: Rgb }) {
+    const img = mattedDisc(96, 36, ring);
+    for (let y = 0; y < 96; y += 3) {
+      for (let x = 0; x < 96; x += 1) {
+        const i = (y * 96 + x) * 4;
+        if (Math.hypot(x + 0.5 - 48, y + 0.5 - 48) < 36) img.data.set([grey.r, grey.g, grey.b], i);
+      }
+    }
+    return img;
+  }
+
+  it("does not flag a cleanly cut subject whose own colours are close to the backdrop", () => {
+    const r = matteResidue(stripedDisc(), grey);
+    expect(r.fringe).toBeLessThan(0.1);
+    expect(r.backdropTinted).toBeLessThan(0.02);
+  });
+
+  it("still flags a backdrop fringe around a subject whose own colours are close to the backdrop", () => {
+    const r = matteResidue(stripedDisc({ width: 3, color: grey }), grey);
+    expect(r.fringe).toBeGreaterThan(0.1);
+    expect(r.backdropTinted).toBeGreaterThan(0.02);
   });
 
   it("measures haze as the share of visible pixels that are only partly opaque", () => {
