@@ -338,6 +338,8 @@ export class ComfyClient {
         startedAt = Date.now();
         options.onProgress?.({ type: "started", promptId });
       }
+      // The queue can show the prompt running before the socket says so.
+      if (lastStatus === "queued") lastStatus = "running";
     };
     let lastStatus = "queued";
     let settledBy = null as "websocket" | "polling" | null;

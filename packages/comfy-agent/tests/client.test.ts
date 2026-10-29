@@ -199,6 +199,14 @@ describe("ComfyClient errors are reported as themselves", () => {
     await vi.waitFor(() => expect(fake.interrupts.length).toBeGreaterThan(0), { timeout: 2000 });
   });
 
+  it("reports a prompt seen running only through the queue as running when its deadline passes", async () => {
+    const { client } = await setup({ scenario: () => ({ kind: "never-finish" }) }, { ws: false });
+    const err = await client.run(graph(), { timeoutMs: 250 }).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ComfyTimeoutError);
+    expect((err as ComfyTimeoutError).phase).toBe("run");
+    expect((err as ComfyTimeoutError).lastStatus).toBe("running");
+  });
+
   it.each([true, false])("does not count queue waiting against the run deadline (websocket: %s)", async (ws) => {
     const { client } = await setup({ queueDelayMs: 400, runDelayMs: 20 }, { ws });
     const events: ProgressEvent[] = [];
