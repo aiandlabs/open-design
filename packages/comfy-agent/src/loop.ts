@@ -238,6 +238,8 @@ export type RoundTrace = {
   /** The node ComfyUI is executing, and the sampler's step progress (from ComfyUI's websocket). */
   runningNode?: string;
   progress?: { nodeId?: string; value: number; max: number };
+  /** True while the prompt waits in ComfyUI's queue behind other prompts. */
+  queued?: boolean;
 };
 
 /**
@@ -639,6 +641,7 @@ export async function generateAsset(request: AssetRequest, options: AssetLoopOpt
     };
     for (const prev of trace.rounds) prev.phase = "done";
     rt.phase = "generating";
+    rt.queued = true;
     trace.rounds.push(rt);
     log(`round ${round}: generating`);
     await writeProgress();
@@ -657,6 +660,13 @@ export async function generateAsset(request: AssetRequest, options: AssetLoopOpt
         queueTimeoutMs: Math.max(1, limits.maxWallTimeMs - (Date.now() - startedAt)),
         ...(options.signal ? { signal: options.signal } : {}),
         onProgress: (e) => {
+          if (e.type === "started" || e.type === "executing" || e.type === "progress") {
+            if (rt.queued) {
+              rt.queued = false;
+              lastProgressWrite = Date.now();
+              void writeProgress(); // leaving the queue is shown at once
+            }
+          }
           if (e.type === "executing") rt.runningNode = e.nodeId;
           if (e.type === "progress") rt.progress = { ...(e.nodeId ? { nodeId: e.nodeId } : {}), value: e.value, max: e.max };
           // At most one progress write a second; the last step is written by the grading write.
@@ -725,6 +735,7 @@ export async function generateAsset(request: AssetRequest, options: AssetLoopOpt
 
     // 4. Critic.
     rt.phase = "grading";
+    rt.queued = false;
     delete rt.runningNode;
     await writeProgress();
     const tc = Date.now();

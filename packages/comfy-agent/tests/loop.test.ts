@@ -319,9 +319,11 @@ describe("generateAsset", () => {
     const { llm } = stubLlm({ plan: PLAN, critic: () => ({ items: [{ id: "count", pass: true }, { id: "background", pass: true }] }) });
     const res = await generateAsset({ prompt: "lantern", width: 768, height: 768, seed: 1 }, { comfy, llm, plannerModel: "test/planner", criticModel: "test/critic", workDir, recognition: false });
     expect(atRender!.rounds[0].phase).toBe("generating");
+    expect(atRender!.rounds[0].queued).toBe(true); // written before ComfyUI started the prompt
     expect(Object.keys(atRender!.rounds[0].graph).length).toBeGreaterThan(3);
     const r1 = res.trace.rounds[0]!;
     expect(r1.phase).toBe("done");
+    expect(r1.queued).toBe(false);
     expect(r1.progress).toMatchObject({ value: 2, max: 2 });
     expect(r1.progress!.nodeId).toBe(Object.entries(r1.graph).find(([, n]) => n.class_type.startsWith("KSampler"))![0]);
   });
