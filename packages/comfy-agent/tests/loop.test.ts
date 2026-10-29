@@ -344,6 +344,35 @@ describe("generateAsset", () => {
       expect(JSON.stringify(log.find((l) => l.tool === PLAN_TOOL)!.body)).toMatch(/When a candidate shows the requested subject, choose it/);
     });
 
+    it.each([
+      ["the sheet number", "1"],
+      ["the sheet number as a number", 1],
+      ["the id without its prefix", "2615"],
+      ["the id in another case", "EMOJI:2615"],
+    ])("accepts a reference given as %s", async (_label, id) => {
+      const { comfy, workDir } = await setup({ objectInfo: kleinInfo(), render: () => encodePng(subject(768, [200, 40, 40])) });
+      const { library } = fakeLibrary();
+      const { llm } = stubLlm({ plan: { ...ICON_PLAN, references: [{ id, why: "cup" }] }, critic: () => ({ items: [{ id: "subject", pass: true }] }) });
+      const res = await generateAsset(
+        { prompt: "a coffee cup icon with steam, flat style", width: 512, height: 512, transparent: true, kind: "icon" },
+        { comfy, llm, plannerModel: "test/planner", criticModel: "test/critic", workDir, references: { library } },
+      );
+      expect(res.trace.references!.shape.map((s) => s.id)).toEqual(["emoji:2615"]);
+      expect(res.trace.references!.answer).toEqual([{ id, why: "cup" }]);
+    });
+
+    it("says so when the planner's reference matches no candidate, instead of claiming it chose none", async () => {
+      const { comfy, workDir } = await setup({ objectInfo: kleinInfo(), render: () => encodePng(subject(768, [200, 40, 40])) });
+      const { library } = fakeLibrary();
+      const { llm } = stubLlm({ plan: { ...ICON_PLAN, references: [{ id: "teapot", why: "?" }] }, critic: () => ({ items: [{ id: "subject", pass: true }] }) });
+      const res = await generateAsset(
+        { prompt: "a coffee cup icon with steam, flat style", width: 512, height: 512, transparent: true, kind: "icon" },
+        { comfy, llm, plannerModel: "test/planner", criticModel: "test/critic", workDir, references: { library } },
+      );
+      expect(res.trace.references!.shape).toEqual([]);
+      expect(res.trace.references!.note).toMatch(/matched no candidate: teapot/);
+    });
+
     it("tells the planner its own checklist items must not contradict the request or each other", () => {
       expect(PLANNER_SYSTEM).toMatch(/must not contradict the request or each other/);
       expect(PLANNER_SYSTEM).toMatch(/in the requested palette/);

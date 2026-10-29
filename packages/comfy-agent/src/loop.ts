@@ -261,6 +261,8 @@ export type AssetTrace = {
     candidates: { id: string; label: string; score: number; source?: string }[];
     shape: { id: string; label: string; source: string; url?: string; why?: string }[];
     set: { id: string; label?: string }[];
+    /** The planner's raw answer about shape references, when candidates were listed. */
+    answer?: unknown[];
     /** Why references were not used, or why none was chosen. */
     note?: string;
     /** References a repair stopped using, and in which round. */
@@ -430,19 +432,34 @@ export async function generateAsset(request: AssetRequest, options: AssetLoopOpt
   const plan = normalizePlan(planCall.data, request, backdrops);
   if (setRefs.length && !plan.checklist.some((c) => c.id === SET_CONSISTENCY_ITEM.id)) plan.checklist.push(SET_CONSISTENCY_ITEM);
   let shapeRefs: { id: string; image: RgbaImage }[] = [];
-  for (const pick of Array.isArray(planCall.data.references) ? planCall.data.references : []) {
-    const found = candidates.find((c) => c.candidate.id === pick?.id);
-    if (!found || shapeRefs.some((s) => s.id === found.candidate.id) || shapeRefs.length >= maxShape) continue;
-    shapeRefs.push({ id: found.candidate.id, image: found.image });
+  const answer = Array.isArray(planCall.data.references) ? planCall.data.references : [];
+  if (candidates.length) refTrace.answer = answer;
+  const unmatched: string[] = [];
+  for (const pick of answer) {
+    const found = matchCandidate(candidates.map((c) => c.candidate), pick?.id);
+    const hit = found ? candidates.find((c) => c.candidate.id === found.id) : undefined;
+    if (!hit) {
+      if (pick?.id !== undefined) unmatched.push(String(pick.id));
+      continue;
+    }
+    const found2 = hit;
+    if (shapeRefs.some((s) => s.id === found2.candidate.id) || shapeRefs.length >= maxShape) continue;
+    shapeRefs.push({ id: found2.candidate.id, image: found2.image });
     refTrace.shape.push({
-      id: found.candidate.id,
-      label: found.asset.label,
-      source: found.asset.source,
-      ...(found.asset.url ? { url: found.asset.url } : {}),
+      id: found2.candidate.id,
+      label: found2.asset.label,
+      source: found2.asset.source,
+      ...(found2.asset.url ? { url: found2.asset.url } : {}),
       ...(typeof pick.why === "string" && pick.why ? { why: pick.why } : {}),
     });
   }
-  if (candidates.length && shapeRefs.length === 0) refTrace.note = typeof planCall.data.reference_note === "string" && planCall.data.reference_note ? planCall.data.reference_note : "the planner chose no reference";
+  if (candidates.length && shapeRefs.length === 0) {
+    refTrace.note = unmatched.length
+      ? `the planner's reference matched no candidate: ${unmatched.join(", ")}`
+      : typeof planCall.data.reference_note === "string" && planCall.data.reference_note
+        ? planCall.data.reference_note
+        : "the planner chose no reference";
+  }
   let keyColor = request.transparent ? plan.key_color ?? Object.keys(backdrops)[0]! : undefined;
   let subjectPrompt = plan.positive_prompt;
   let subjectNegative = plan.negative_prompt;
@@ -982,6 +999,26 @@ export function deterministicChecks(
     }
   }
   return checks;
+}
+
+/**
+ * The candidate a planner's pick names. Models answer with the exact id, the
+ * number on the sheet (1-based), the id without its `emoji:`/`icon:` prefix,
+ * another letter case, or the label; all of these name one candidate.
+ */
+export function matchCandidate<C extends { id: string; label: string }>(candidates: readonly C[], raw: unknown): C | undefined {
+  if (raw === undefined || raw === null) return undefined;
+  const s = String(raw).trim().replace(/^#/, "");
+  if (/^\d+$/.test(s)) {
+    const byNumber = candidates[Number(s) - 1];
+    if (byNumber && !candidates.some((c) => c.id.split(":").pop() === s)) return byNumber;
+  }
+  const k = s.toLowerCase();
+  return (
+    candidates.find((c) => c.id.toLowerCase() === k) ??
+    candidates.find((c) => c.id.split(":").pop()!.toLowerCase() === k) ??
+    candidates.find((c) => c.label.toLowerCase() === k)
+  );
 }
 
 /** Checklist item the loop adds when icons from the same set are used as style references. */
