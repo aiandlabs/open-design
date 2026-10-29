@@ -262,6 +262,8 @@ export type AssetTrace = {
   };
   plan: {
     checklist: ChecklistItem[];
+    /** What the image should show, as a viewer would name it (the request when the planner gave none). */
+    subject?: string;
     positivePrompt: string;
     negativePrompt: string;
     keyColor?: string;
@@ -558,6 +560,7 @@ export async function generateAsset(request: AssetRequest, options: AssetLoopOpt
     },
     plan: {
       checklist: plan.checklist,
+      ...(plan.subject ? { subject: plan.subject } : {}),
       positivePrompt: plan.positive_prompt,
       negativePrompt: plan.negative_prompt,
       ...(keyColor ? { keyColor } : {}),
@@ -1078,6 +1081,7 @@ function normalizePlan(raw: PlanOutput, request: AssetRequest, backdrops: Record
   return {
     ...raw,
     checklist: checklist.slice(0, 8),
+    subject: typeof raw.subject === "string" && raw.subject.trim() ? raw.subject.trim() : request.prompt,
     positive_prompt: typeof raw.positive_prompt === "string" && raw.positive_prompt.trim() ? raw.positive_prompt.trim() : request.prompt,
     negative_prompt: [typeof raw.negative_prompt === "string" ? raw.negative_prompt.trim() : "", request.negative?.trim() ?? ""].filter(Boolean).join(", "),
     ...(key && backdrops[key] ? { key_color: key } : { key_color: undefined }),

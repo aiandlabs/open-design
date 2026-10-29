@@ -126,7 +126,7 @@ describe("generateAsset", () => {
     });
     const res = await generateAsset(
       { prompt: "a red paper lantern on a white background", width: 512, height: 512, seed: 7 },
-      { comfy, llm, plannerModel: "test/planner", criticModel: "test/critic", workDir, limits: { maxRounds: 3 } },
+      { comfy, llm, recognition: false, plannerModel: "test/planner", criticModel: "test/critic", workDir, limits: { maxRounds: 3 } },
     );
     expect(res.ok).toBe(true);
     const t = res.trace;
@@ -163,7 +163,7 @@ describe("generateAsset", () => {
       expect(r.timing.comfyMs).toBeGreaterThanOrEqual(0);
       expect(r.critic!.call!.usage).toEqual({ inputTokens: 2000, outputTokens: 300 });
     }
-    expect(log.map((l) => l.tool)).toEqual([PLAN_TOOL, CRITIC_TOOL, REPAIR_TOOL, CRITIC_TOOL]);
+    expect(log.map((l) => l.tool).filter((x) => x !== RECOGNISE_TOOL && x !== MATCH_TOOL)).toEqual([PLAN_TOOL, CRITIC_TOOL, REPAIR_TOOL, CRITIC_TOOL]);
     // 2 planner calls at (2000×3 + 300×12)/1e6 and 2 critic calls at (2000×0.15 + 300×0.5)/1e6.
     expect(t.totals.estimatedCostUsd).toBeCloseTo(2 * 0.0096 + 2 * 0.00045, 10);
     expect(t.totals.reportedCostUsd).toBeNull();
@@ -182,7 +182,7 @@ describe("generateAsset", () => {
     });
     const res = await generateAsset(
       { prompt: "a red disc icon", width: 256, height: 256, transparent: true },
-      { comfy, llm, plannerModel: "test/planner", criticModel: "test/critic", workDir },
+      { comfy, llm, recognition: false, plannerModel: "test/planner", criticModel: "test/critic", workDir },
     );
     expect(res.trace.stopReason).toBe("all-pass");
     const r1 = res.trace.rounds[0]!;
@@ -221,7 +221,7 @@ describe("generateAsset", () => {
       });
       const res = await generateAsset(
         { prompt: "a red disc icon", width: 256, height: 256, transparent: true },
-        { comfy, llm, plannerModel: "test/planner", criticModel: "test/critic", workDir },
+        { comfy, llm, recognition: false, plannerModel: "test/planner", criticModel: "test/critic", workDir },
       );
       expect(res.trace.stopReason).toBe("all-pass");
       expect(res.trace.server.cutout).toEqual({ method: "matte", model: "birefnet.safetensors" });
@@ -255,7 +255,7 @@ describe("generateAsset", () => {
       });
       const res = await generateAsset(
         { prompt: "a red disc icon", width: 256, height: 256, transparent: true, cutout: "chroma-key" },
-        { comfy, llm, plannerModel: "test/planner", criticModel: "test/critic", workDir },
+        { comfy, llm, recognition: false, plannerModel: "test/planner", criticModel: "test/critic", workDir },
       );
       expect(res.trace.server.cutout).toEqual({ method: "chroma-key" });
       expect(res.trace.rounds[0]!.checks.map((c) => c.id)).toEqual(["size", "alpha", "flat_background", "key_residue"]);
@@ -299,6 +299,15 @@ describe("generateAsset", () => {
       expect(JSON.stringify(log.find((l) => l.tool === REPAIR_TOOL)!.body)).toContain("a bar of soap");
       expect(res.trace.stopReason).toBe("all-pass");
       expect(res.trace.rounds[1]!.checks.find((c) => c.id === "recognisable")).toMatchObject({ pass: true });
+    });
+
+    it("falls back to the request as the subject when the planner gives none, and records the subject", async () => {
+      const { comfy, workDir } = await setup({ render: () => lanternPng(768, 768) });
+      const { llm, log } = stubLlm({ plan: PLAN, critic: () => ({ items: [{ id: "count", pass: true }, { id: "background", pass: true }] }) });
+      const res = await generateAsset({ prompt: "an onigiri icon", width: 768, height: 768, seed: 1 }, { comfy, llm, plannerModel: "test/planner", criticModel: "test/critic", workDir });
+      expect(JSON.stringify(log.find((l) => l.tool === MATCH_TOOL)!.body)).toContain("Intended subject: an onigiri icon");
+      expect(res.trace.plan.subject).toBe("an onigiri icon");
+      expect(res.trace.rounds[0]!.checks.find((c) => c.id === "recognisable")).toMatchObject({ pass: true });
     });
 
     it("can be turned off", async () => {
