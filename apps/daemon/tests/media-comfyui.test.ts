@@ -226,10 +226,13 @@ describe('generateMedia with comfyui-agent', () => {
     });
     expect(result.name).toBe('agent.png');
     expect(result.providerNote).toMatch(/comfyui\/comfyui-agent .* 1 round\(s\) .* 2\/2 checks .* all-pass/);
-    expect(llmCalls).toEqual([
+    // Planning and grading, in order; the blind recognition check (submit_recognition,
+    // then submit_match) runs on the critic model after grading.
+    expect(llmCalls.filter((c) => c.tool === 'submit_plan' || c.tool === 'submit_grades')).toEqual([
       { tool: 'submit_plan', model: 'test/planner' },
       { tool: 'submit_grades', model: 'test/critic' },
     ]);
+    expect(llmCalls.filter((c) => c.tool === 'submit_recognition').every((c) => c.model === 'test/critic')).toBe(true);
     const dir = path.join(projectsRoot, 'p1');
     const trace = JSON.parse(await readFile(path.join(dir, 'agent.trace.json'), 'utf8'));
     expect(trace).toMatchObject({ stopReason: 'all-pass', asset: 'agent.png', models: { planner: 'test/planner', critic: 'test/critic' } });
@@ -246,7 +249,7 @@ describe('generateMedia with comfyui-agent', () => {
       prompt: 'a red square', output: 'auto.png', comfy: { width: 256, height: 256, maxRounds: 1 },
     });
     // No preferred id is listed here, so both roles take the first model with vision + tool calling.
-    expect(llmCalls.map((c) => c.model)).toEqual(['test/planner', 'test/planner']);
+    expect(llmCalls.filter((c) => c.tool === 'submit_plan' || c.tool === 'submit_grades').map((c) => c.model)).toEqual(['test/planner', 'test/planner']);
   });
 
   it('refuses a configured critic without vision as a 400, before ComfyUI runs', async () => {
