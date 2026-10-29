@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import {
   GeneratedAssetNotFoundError,
+  listGeneratingAssets,
   listGeneratedAssets,
   loadSetReferences,
   selectSetReferences,
@@ -98,6 +99,25 @@ describe('generated assets', () => {
     await setGeneratedAssetReview(dir, 'icons/b.png', 'rejected', 'ui');
     const refs = await loadSetReferences(dir, { set: 'onboarding', exclude: 'icons/new.png' }, 3);
     expect(refs).toEqual([{ id: 'icons/a.png', label: 'a icons/a icon', png: Buffer.from('png') }]);
+  });
+});
+
+describe('assets being generated', () => {
+  it('lists asset loops whose trace is still marked running, and not finished ones', async () => {
+    await mkdir(path.join(dir, '.comfy-agent', 'hero'), { recursive: true });
+    await writeFile(
+      path.join(dir, '.comfy-agent', 'hero', 'trace.json'),
+      JSON.stringify({ running: true, startedAt: '2026-10-29T01:00:00.000Z', request: { prompt: 'a hero photo', kind: 'icon' }, set: 'food', rounds: [{}] }),
+    );
+    await mkdir(path.join(dir, '.comfy-agent', 'done'), { recursive: true });
+    await writeFile(path.join(dir, '.comfy-agent', 'done', 'trace.json'), JSON.stringify({ rounds: [{}] }));
+    expect(await listGeneratingAssets(dir)).toEqual([
+      { workDir: '.comfy-agent/hero', tracePath: '.comfy-agent/hero/trace.json', prompt: 'a hero photo', kind: 'icon', set: 'food', startedAt: '2026-10-29T01:00:00.000Z' },
+    ]);
+  });
+
+  it('is empty when nothing is being generated', async () => {
+    expect(await listGeneratingAssets(dir)).toEqual([]);
   });
 });
 

@@ -9,6 +9,7 @@ import { readdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
 import type {
+  GeneratingAsset,
   GeneratedAsset,
   GeneratedAssetReview,
   GeneratedAssetReviewState,
@@ -123,6 +124,40 @@ export async function listGeneratedAssets(projectDir: string): Promise<Generated
     }
   }
   return out.sort((a, b) => a.path.localeCompare(b.path));
+}
+
+/**
+ * Asset loops that are still running: `.comfy-agent/<name>/trace.json` files
+ * the loop rewrites after each round and marks `running` until it finishes.
+ */
+export async function listGeneratingAssets(projectDir: string): Promise<GeneratingAsset[]> {
+  const root = path.join(projectDir, '.comfy-agent');
+  let entries;
+  try {
+    entries = await readdir(root, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+  const out: GeneratingAsset[] = [];
+  for (const e of entries) {
+    if (!e.isDirectory()) continue;
+    const tracePath = `.comfy-agent/${e.name}/trace.json`;
+    try {
+      const trace = JSON.parse(await readFile(path.join(projectDir, tracePath), 'utf8')) as TraceFile & { running?: unknown; startedAt?: unknown };
+      if (trace.running !== true) continue;
+      out.push({
+        workDir: `.comfy-agent/${e.name}`,
+        tracePath,
+        ...(typeof trace.request?.prompt === 'string' ? { prompt: trace.request.prompt } : {}),
+        ...(trace.request?.kind === 'icon' ? { kind: 'icon' as const } : {}),
+        ...(typeof trace.set === 'string' && trace.set ? { set: trace.set } : {}),
+        ...(typeof trace.startedAt === 'string' ? { startedAt: trace.startedAt } : {}),
+      });
+    } catch {
+      // No progress trace in this folder (yet).
+    }
+  }
+  return out.sort((a, b) => a.workDir.localeCompare(b.workDir));
 }
 
 /** Set a person's review of one asset; stored in its trace file. */

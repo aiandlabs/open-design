@@ -39,6 +39,20 @@ export interface GeneratedAsset {
 
 export interface GeneratedAssetsResponse {
   assets: GeneratedAsset[];
+  /** Asset loops still running (their trace is rewritten after each round). */
+  generating?: GeneratingAsset[];
+}
+
+/** An asset loop that has not finished: its work folder and progress trace. */
+export interface GeneratingAsset {
+  /** Project-relative work folder, `.comfy-agent/<name>`, holding round-N.png. */
+  workDir: string;
+  /** Project-relative path of the progress trace. */
+  tracePath: string;
+  prompt?: string;
+  kind?: 'icon';
+  set?: string;
+  startedAt?: string;
 }
 
 export interface GeneratedAssetReviewRequest {
