@@ -306,6 +306,33 @@ describe("generateAsset", () => {
     expect(final.rounds).toHaveLength(res.trace.rounds.length);
   });
 
+  it("never claims a stop reason while running, and finishes the trace when the loop fails, so it is not left running", async () => {
+    let dir = "";
+    let during: Record<string, unknown> | null = null;
+    const { comfy, workDir } = await setup({
+      scenario: () => {
+        try {
+          during = JSON.parse(readFileSync(path.join(dir, "trace.json"), "utf8"));
+        } catch {
+          // not written yet
+        }
+        return { kind: "execution-error", nodeId: "sampler", nodeType: "KSampler", message: "out of memory" };
+      },
+    });
+    dir = workDir;
+    const { llm } = stubLlm({ plan: PLAN, critic: () => ({ items: [] }) });
+    await expect(
+      generateAsset({ prompt: "lantern", width: 768, height: 768, seed: 1 }, { comfy, llm, plannerModel: "test/planner", criticModel: "test/critic", workDir, recognition: false }),
+    ).rejects.toThrow();
+    expect(during).toMatchObject({ running: true, stopReason: null });
+    const final = JSON.parse(readFileSync(path.join(workDir, "trace.json"), "utf8"));
+    expect(final.running).toBeUndefined();
+    expect(final.stopReason).toBe("error");
+    expect(typeof final.finishedAt).toBe("string");
+    expect(final.rounds[0].phase).toBe("done");
+    expect(final.rounds[0].error.message).toMatch(/out of memory/);
+  });
+
   it("records each round's phase, running node and sampler steps for live progress", async () => {
     let atRender: Record<string, any> | null = null;
     let dir = "";

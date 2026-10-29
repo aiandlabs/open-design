@@ -293,6 +293,8 @@ export type AssetTrace = {
   rounds: RoundTrace[];
   best: { round: number; score: RoundTrace["score"]; imagePath?: string } | null;
   stopReason: StopReason;
+  /** Why the loop failed, when it ended without an image. */
+  error?: { code: string; message: string };
   totals: {
     durationMs: number;
     /** Sum of the rounds' queue waits; durationMs minus this is the active time. */
@@ -583,373 +585,386 @@ export async function generateAsset(request: AssetRequest, options: AssetLoopOpt
   addUsage(trace, planCall);
   // Progress for hosts that show the loop while it runs: the same trace,
   // rewritten after each round's grading and repair, marked running. The final
-  // write at the end replaces it without the mark. A failed write never stops the loop.
+  // write at the end replaces it without the mark, also when the loop fails, so
+  // a trace is never left running. While running it has no stop reason yet.
+  // A failed progress write never stops the loop.
   const writeProgress = async () => {
-    await writeFile(path.join(options.workDir, "trace.json"), JSON.stringify({ ...trace, running: true })).catch(() => undefined);
+    await writeFile(path.join(options.workDir, "trace.json"), JSON.stringify({ ...trace, stopReason: null, running: true })).catch(() => undefined);
   };
+  const finish = () => {
+    for (const r of trace.rounds) r.phase = "done";
+    const finished = Date.now();
+    trace.finishedAt = new Date(finished).toISOString();
+    trace.totals.durationMs = finished - startedAt;
+  };
+  try {
 
-  let best: { round: number; png: Buffer; graph: ApiWorkflow; score: RoundTrace["score"]; imagePath?: string; copied: boolean } | null = null;
-  // The set's icons, shown to the critic for the set_consistency item.
-  const setSheet = setRefs.length ? encodePng(contactSheet(setRefs.map((s) => s.image), 256)).toString("base64") : undefined;
-  let previousRaw: Buffer | null = null;
-  const seenGraphs = new Set<string>();
+    let best: { round: number; png: Buffer; graph: ApiWorkflow; score: RoundTrace["score"]; imagePath?: string; copied: boolean } | null = null;
+    // The set's icons, shown to the critic for the set_consistency item.
+    const setSheet = setRefs.length ? encodePng(contactSheet(setRefs.map((s) => s.image), 256)).toString("base64") : undefined;
+    let previousRaw: Buffer | null = null;
+    const seenGraphs = new Set<string>();
 
-  for (let round = 1; round <= limits.maxRounds; round += 1) {
-    if (options.signal?.aborted) {
-      trace.stopReason = "aborted";
-      break;
-    }
-    // Queue waits count only against the wall-clock ceiling, not the active-time budget.
-    const wall = Date.now() - startedAt;
-    const queued = trace.rounds.reduce((s, r) => s + r.timing.queueWaitMs, 0);
-    const active = wall - queued;
-    const avgRound = trace.rounds.length ? trace.rounds.reduce((s, r) => s + r.durationMs - r.timing.queueWaitMs, 0) / trace.rounds.length : 0;
-    if (round > 1 && wall >= limits.maxWallTimeMs) {
-      trace.stopReason = "queue-timeout";
-      break;
-    }
-    if (round > 1 && active + avgRound > limits.maxTimeMs) {
-      trace.stopReason = "time-limit";
-      break;
-    }
-    if (round > 1 && trace.totals.costUsd >= limits.maxCostUsd) {
-      trace.stopReason = "cost-limit";
-      break;
-    }
+    for (let round = 1; round <= limits.maxRounds; round += 1) {
+      if (options.signal?.aborted) {
+        trace.stopReason = "aborted";
+        break;
+      }
+      // Queue waits count only against the wall-clock ceiling, not the active-time budget.
+      const wall = Date.now() - startedAt;
+      const queued = trace.rounds.reduce((s, r) => s + r.timing.queueWaitMs, 0);
+      const active = wall - queued;
+      const avgRound = trace.rounds.length ? trace.rounds.reduce((s, r) => s + r.durationMs - r.timing.queueWaitMs, 0) / trace.rounds.length : 0;
+      if (round > 1 && wall >= limits.maxWallTimeMs) {
+        trace.stopReason = "queue-timeout";
+        break;
+      }
+      if (round > 1 && active + avgRound > limits.maxTimeMs) {
+        trace.stopReason = "time-limit";
+        break;
+      }
+      if (round > 1 && trace.totals.costUsd >= limits.maxCostUsd) {
+        trace.stopReason = "cost-limit";
+        break;
+      }
 
-    // Never queue a graph identical to an earlier round: change the seed instead.
-    let graphKey = JSON.stringify(doc.graph);
-    if (seenGraphs.has(graphKey) && doc.roles.sampler) {
-      const cur = Number(describeDoc(doc).seed ?? 0);
-      doc = applyEdit(doc, { op: "set_seed", seed: (cur + 7_919_993) % 2 ** 32 }, info);
-      graphKey = JSON.stringify(doc.graph);
-    }
-    seenGraphs.add(graphKey);
+      // Never queue a graph identical to an earlier round: change the seed instead.
+      let graphKey = JSON.stringify(doc.graph);
+      if (seenGraphs.has(graphKey) && doc.roles.sampler) {
+        const cur = Number(describeDoc(doc).seed ?? 0);
+        doc = applyEdit(doc, { op: "set_seed", seed: (cur + 7_919_993) % 2 ** 32 }, info);
+        graphKey = JSON.stringify(doc.graph);
+      }
+      seenGraphs.add(graphKey);
 
-    const roundStart = Date.now();
-    // A matting cut-out runs in the same prompt: the saved image carries the matte as alpha.
-    const queuedGraph = cutout?.method === "matte" ? addBackgroundRemoval(doc.graph, cutout.model!) : doc.graph;
-    const rt: RoundTrace = {
-      round,
-      startedAt: new Date(roundStart).toISOString(),
-      durationMs: 0,
-      timing: { comfyMs: 0, queueWaitMs: 0, postProcessMs: 0, criticMs: 0, plannerMs: 0 },
-      graph: structuredClone(queuedGraph),
-      settings: describeDoc(doc),
-      checks: [],
-      score: { passed: 0, total: 0, ratio: 0 },
-    };
-    for (const prev of trace.rounds) prev.phase = "done";
-    rt.phase = "generating";
-    rt.queued = true;
-    trace.rounds.push(rt);
-    log(`round ${round}: generating`);
-    await writeProgress();
-    let lastProgressWrite = Date.now();
+      const roundStart = Date.now();
+      // A matting cut-out runs in the same prompt: the saved image carries the matte as alpha.
+      const queuedGraph = cutout?.method === "matte" ? addBackgroundRemoval(doc.graph, cutout.model!) : doc.graph;
+      const rt: RoundTrace = {
+        round,
+        startedAt: new Date(roundStart).toISOString(),
+        durationMs: 0,
+        timing: { comfyMs: 0, queueWaitMs: 0, postProcessMs: 0, criticMs: 0, plannerMs: 0 },
+        graph: structuredClone(queuedGraph),
+        settings: describeDoc(doc),
+        checks: [],
+        score: { passed: 0, total: 0, ratio: 0 },
+      };
+      for (const prev of trace.rounds) prev.phase = "done";
+      rt.phase = "generating";
+      rt.queued = true;
+      trace.rounds.push(rt);
+      log(`round ${round}: generating`);
+      await writeProgress();
+      let lastProgressWrite = Date.now();
 
-    // 2. Run.
-    let rawPng: Buffer;
-    let matted: RgbaImage | undefined;
-    try {
-      assertValidGraph(queuedGraph, info);
-      const t = Date.now();
-      const run = await options.comfy.run(queuedGraph, {
-        validate: false,
-        ...(options.runTimeoutMs ? { timeoutMs: options.runTimeoutMs } : {}),
-        // The prompt may wait in the queue only until the wall-clock ceiling.
-        queueTimeoutMs: Math.max(1, limits.maxWallTimeMs - (Date.now() - startedAt)),
-        ...(options.signal ? { signal: options.signal } : {}),
-        onProgress: (e) => {
-          if (e.type === "started" || e.type === "executing" || e.type === "progress") {
-            if (rt.queued) {
-              rt.queued = false;
-              lastProgressWrite = Date.now();
-              void writeProgress(); // leaving the queue is shown at once
+      // 2. Run.
+      let rawPng: Buffer;
+      let matted: RgbaImage | undefined;
+      try {
+        assertValidGraph(queuedGraph, info);
+        const t = Date.now();
+        const run = await options.comfy.run(queuedGraph, {
+          validate: false,
+          ...(options.runTimeoutMs ? { timeoutMs: options.runTimeoutMs } : {}),
+          // The prompt may wait in the queue only until the wall-clock ceiling.
+          queueTimeoutMs: Math.max(1, limits.maxWallTimeMs - (Date.now() - startedAt)),
+          ...(options.signal ? { signal: options.signal } : {}),
+          onProgress: (e) => {
+            if (e.type === "started" || e.type === "executing" || e.type === "progress") {
+              if (rt.queued) {
+                rt.queued = false;
+                lastProgressWrite = Date.now();
+                void writeProgress(); // leaving the queue is shown at once
+              }
             }
-          }
-          if (e.type === "executing") rt.runningNode = e.nodeId;
-          if (e.type === "progress") rt.progress = { ...(e.nodeId ? { nodeId: e.nodeId } : {}), value: e.value, max: e.max };
-          // At most one progress write a second; the last step is written by the grading write.
-          if ((e.type === "executing" || e.type === "progress") && Date.now() - lastProgressWrite >= 1000) {
-            lastProgressWrite = Date.now();
-            void writeProgress();
-          }
-          if (e.type === "started") log(`round ${round}: started after ${Math.round((Date.now() - t) / 1000)} s in the queue`);
-          if (e.type === "progress" && e.max > 0 && (e.value === e.max || e.value % 5 === 0)) log(`round ${round}: step ${e.value}/${e.max}`);
-        },
-      });
-      rt.timing.comfyMs = Date.now() - t;
-      rt.timing.queueWaitMs = run.queueWaitMs;
-      trace.totals.queueWaitMs += run.queueWaitMs;
-      const image = run.images.at(-1)!;
-      rawPng = image.bytes;
-      const raw = decodePng(rawPng);
-      if (cutout?.method === "matte") {
-        // Keep the cut-out for post-processing; the round's raw image (used for
-        // edits and img2img) is the opaque render underneath it.
-        matted = raw;
-        rawPng = encodePng(opaque(raw));
+            if (e.type === "executing") rt.runningNode = e.nodeId;
+            if (e.type === "progress") rt.progress = { ...(e.nodeId ? { nodeId: e.nodeId } : {}), value: e.value, max: e.max };
+            // At most one progress write a second; the last step is written by the grading write.
+            if ((e.type === "executing" || e.type === "progress") && Date.now() - lastProgressWrite >= 1000) {
+              lastProgressWrite = Date.now();
+              void writeProgress();
+            }
+            if (e.type === "started") log(`round ${round}: started after ${Math.round((Date.now() - t) / 1000)} s in the queue`);
+            if (e.type === "progress" && e.max > 0 && (e.value === e.max || e.value % 5 === 0)) log(`round ${round}: step ${e.value}/${e.max}`);
+          },
+        });
+        rt.timing.comfyMs = Date.now() - t;
+        rt.timing.queueWaitMs = run.queueWaitMs;
+        trace.totals.queueWaitMs += run.queueWaitMs;
+        const image = run.images.at(-1)!;
+        rawPng = image.bytes;
+        const raw = decodePng(rawPng);
+        if (cutout?.method === "matte") {
+          // Keep the cut-out for post-processing; the round's raw image (used for
+          // edits and img2img) is the opaque render underneath it.
+          matted = raw;
+          rawPng = encodePng(opaque(raw));
+        }
+        rt.generation = { promptId: run.promptId, width: raw.width, height: raw.height, via: run.via };
+      } catch (err) {
+        rt.error = errorInfo(err);
+        rt.durationMs = Date.now() - roundStart;
+        const queueTimeout = err instanceof ComfyTimeoutError && err.phase === "queue";
+        if (queueTimeout) {
+          rt.timing.queueWaitMs = rt.durationMs;
+          trace.totals.queueWaitMs += rt.durationMs;
+        }
+        if (!best) throw err; // nothing to fall back to
+        trace.stopReason = options.signal?.aborted ? "aborted" : queueTimeout ? "queue-timeout" : "error";
+        break;
       }
-      rt.generation = { promptId: run.promptId, width: raw.width, height: raw.height, via: run.via };
-    } catch (err) {
-      rt.error = errorInfo(err);
-      rt.durationMs = Date.now() - roundStart;
-      const queueTimeout = err instanceof ComfyTimeoutError && err.phase === "queue";
-      if (queueTimeout) {
-        rt.timing.queueWaitMs = rt.durationMs;
-        trace.totals.queueWaitMs += rt.durationMs;
+      const rawPath = path.join(options.workDir, `round-${round}-raw.png`);
+      await writeFile(rawPath, rawPng);
+      rt.rawImagePath = recordPath(rawPath);
+      previousRaw = rawPng;
+
+      // 3. Post-process in code and run deterministic checks.
+      const tp = Date.now();
+      const post = postProcess(decodePng(rawPng), request, keyColor, matted ? { matted } : {});
+      const finalPng = encodePng(post.image);
+      const finalPath = path.join(options.workDir, `round-${round}.png`);
+      await writeFile(finalPath, finalPng);
+      rt.imagePath = recordPath(finalPath);
+      if (post.key) rt.keyColor = post.key;
+      if (post.cutout) rt.cutout = post.cutout;
+      rt.checks = deterministicChecks(post.image, request, post.key, post.cutout);
+      const inUse = [...shapeRefs, ...setRefs];
+      if (inUse.length && doc.kind !== "edit") {
+        // Near-copy guard: a reference supplies shape, concept or style, never the drawing itself.
+        rt.referenceSimilarity = inUse.map((r) => ({ id: r.id, ...referenceSimilarity(post.image, r.image) }));
+        const copies = rt.referenceSimilarity.filter((s) => s.nearCopy);
+        rt.checks.push({
+          id: "reference_copy",
+          pass: copies.length === 0,
+          detail: copies.length
+            ? `the output reproduces ${copies.map((c) => `${c.id} (silhouette ${c.silhouetteIoU.toFixed(2)}, structure ${c.structure.toFixed(2)})`).join(", ")}; it must be a new drawing`
+            : `no near-copy of ${inUse.length} reference(s) (limits: silhouette ≥ ${NEAR_COPY_MIN_IOU} and structure ≥ ${NEAR_COPY_MIN_STRUCTURE})`,
+        });
       }
-      if (!best) throw err; // nothing to fall back to
-      trace.stopReason = options.signal?.aborted ? "aborted" : queueTimeout ? "queue-timeout" : "error";
-      break;
-    }
-    const rawPath = path.join(options.workDir, `round-${round}-raw.png`);
-    await writeFile(rawPath, rawPng);
-    rt.rawImagePath = recordPath(rawPath);
-    previousRaw = rawPng;
+      rt.timing.postProcessMs = Date.now() - tp;
 
-    // 3. Post-process in code and run deterministic checks.
-    const tp = Date.now();
-    const post = postProcess(decodePng(rawPng), request, keyColor, matted ? { matted } : {});
-    const finalPng = encodePng(post.image);
-    const finalPath = path.join(options.workDir, `round-${round}.png`);
-    await writeFile(finalPath, finalPng);
-    rt.imagePath = recordPath(finalPath);
-    if (post.key) rt.keyColor = post.key;
-    if (post.cutout) rt.cutout = post.cutout;
-    rt.checks = deterministicChecks(post.image, request, post.key, post.cutout);
-    const inUse = [...shapeRefs, ...setRefs];
-    if (inUse.length && doc.kind !== "edit") {
-      // Near-copy guard: a reference supplies shape, concept or style, never the drawing itself.
-      rt.referenceSimilarity = inUse.map((r) => ({ id: r.id, ...referenceSimilarity(post.image, r.image) }));
-      const copies = rt.referenceSimilarity.filter((s) => s.nearCopy);
-      rt.checks.push({
-        id: "reference_copy",
-        pass: copies.length === 0,
-        detail: copies.length
-          ? `the output reproduces ${copies.map((c) => `${c.id} (silhouette ${c.silhouetteIoU.toFixed(2)}, structure ${c.structure.toFixed(2)})`).join(", ")}; it must be a new drawing`
-          : `no near-copy of ${inUse.length} reference(s) (limits: silhouette ≥ ${NEAR_COPY_MIN_IOU} and structure ≥ ${NEAR_COPY_MIN_STRUCTURE})`,
-      });
-    }
-    rt.timing.postProcessMs = Date.now() - tp;
+      // 4. Critic.
+      rt.phase = "grading";
+      rt.queued = false;
+      delete rt.runningNode;
+      await writeProgress();
+      const tc = Date.now();
+      const criticView = encodePng(fitWithin(request.transparent ? cutoutSheet(post.image) : post.image, request.transparent ? 1024 : 768));
+      try {
+        log(`round ${round}: grading with ${criticModel}`);
+        const grade = async (reminder: string) => {
+          const call = await options.llm.structured<Record<string, unknown>>(
+            {
+              model: criticModel,
+              system: CRITIC_SYSTEM,
+              content: [
+                { type: "image", mime: "image/png", base64: criticView.toString("base64") },
+                ...(setSheet ? [{ type: "image" as const, mime: "image/png", base64: setSheet }] : []),
+                { type: "text", text: criticUserText(plan.checklist, request, setRefs.length) + reminder },
+              ],
+              schema: CRITIC_SCHEMA,
+              toolName: CRITIC_TOOL,
+              maxTokens: 4096,
+              ...(options.criticReasoningEffort ? { reasoningEffort: options.criticReasoningEffort } : {}),
+            },
+            criticShape,
+          );
+          addUsage(trace, call);
+          return { call, graded: normalizeCriticItems(call.data) };
+        };
+        let attempt = await grade("");
+        const calls = [callTrace("critic", attempt.call)];
+        const missing = (g: CriticItem[]) => plan.checklist.filter((c) => !g.some((it) => it.id === c.id));
+        let raw: unknown;
+        if (missing(attempt.graded).length > 0) {
+          // Keep what the model actually sent, then ask once more for every item.
+          raw = attempt.call.data;
+          const retry = await grade(`\nReturn an "items" array with exactly one entry for each of these ids: ${plan.checklist.map((c) => c.id).join(", ")}. "pass" must be a boolean.`);
+          calls.push(callTrace("critic", retry.call));
+          if (missing(retry.graded).length < missing(attempt.graded).length) attempt = retry;
+        }
+        const overall = typeof attempt.call.data.overall === "string" ? attempt.call.data.overall : undefined;
+        rt.critic = {
+          items: alignCritic(plan.checklist, attempt.graded),
+          call: calls[0]!,
+          ...(calls.length > 1 ? { retries: calls.slice(1) } : {}),
+          ...(raw !== undefined ? { raw } : {}),
+          ...(overall ? { overall } : {}),
+        };
+      } catch (err) {
+        rt.critic = { items: plan.checklist.map((c) => ({ id: c.id, pass: false, evidence: "critic unavailable" })), error: errorInfo(err).message };
+      }
+      rt.timing.criticMs = Date.now() - tc;
 
-    // 4. Critic.
-    rt.phase = "grading";
-    rt.queued = false;
-    delete rt.runningNode;
-    await writeProgress();
-    const tc = Date.now();
-    const criticView = encodePng(fitWithin(request.transparent ? cutoutSheet(post.image) : post.image, request.transparent ? 1024 : 768));
-    try {
-      log(`round ${round}: grading with ${criticModel}`);
-      const grade = async (reminder: string) => {
-        const call = await options.llm.structured<Record<string, unknown>>(
+      // 5. Blind recognition: would a viewer who is not told the subject know what it is?
+      if (options.recognition !== false && typeof plan.subject === "string" && plan.subject.trim()) {
+        const recognised = await recogniseBlind(options.llm, criticModel, criticShape, criticView, plan.subject.trim(), options.criticReasoningEffort, trace);
+        if (recognised) rt.checks.push(recognised);
+      }
+
+      await writeProgress();
+      const passed = rt.checks.filter((c) => c.pass).length + rt.critic.items.filter((c) => c.pass).length;
+      const total = rt.checks.length + rt.critic.items.length;
+      rt.score = { passed, total, ratio: total ? passed / total : 0 };
+      // A near-copy of a reference is never preferred over an original drawing, whatever its score.
+      const copied = rt.checks.some((c) => c.id === "reference_copy" && !c.pass);
+      if (!best || (best.copied && !copied) || (best.copied === copied && rt.score.ratio > best.score.ratio)) {
+        best = { round, png: finalPng, graph: structuredClone(queuedGraph), score: rt.score, imagePath: rt.imagePath, copied };
+      }
+      const allPass = !rt.critic.error && passed === total;
+      if (allPass) {
+        rt.durationMs = Date.now() - roundStart;
+        trace.stopReason = "all-pass";
+        break;
+      }
+      if (round === limits.maxRounds) {
+        rt.durationMs = Date.now() - roundStart;
+        trace.stopReason = "max-rounds";
+        break;
+      }
+      if (trace.totals.costUsd >= limits.maxCostUsd) {
+        rt.durationMs = Date.now() - roundStart;
+        trace.stopReason = "cost-limit";
+        break;
+      }
+
+      // 5. Repair.
+      rt.phase = "repairing";
+      await writeProgress();
+      const tr = Date.now();
+      const repair: NonNullable<RoundTrace["repair"]> = { proposed: [], applied: [], rejected: [] };
+      rt.repair = repair;
+      try {
+        log(`round ${round}: planning repairs`);
+        const call = await options.llm.structured<{ rationale?: string; edits?: unknown[] }>(
           {
-            model: criticModel,
-            system: CRITIC_SYSTEM,
+            model: plannerModel,
+            system: REPAIR_SYSTEM,
             content: [
               { type: "image", mime: "image/png", base64: criticView.toString("base64") },
-              ...(setSheet ? [{ type: "image" as const, mime: "image/png", base64: setSheet }] : []),
-              { type: "text", text: criticUserText(plan.checklist, request, setRefs.length) + reminder },
+              {
+                type: "text",
+                text:
+                  repairUserText(request, plan.checklist, doc, rt, caps, trace.rounds, keyColor, cutout?.method, backdrops) +
+                  ([...shapeRefs, ...setRefs].length
+                    ? `\nReferences in use (drop_reference takes these ids): ${[...shapeRefs.map((r) => `${r.id} (shape)`), ...setRefs.map((r) => `${r.id} (set)`)].join(", ")}.`
+                    : ""),
+              },
             ],
-            schema: CRITIC_SCHEMA,
-            toolName: CRITIC_TOOL,
-            maxTokens: 4096,
-            ...(options.criticReasoningEffort ? { reasoningEffort: options.criticReasoningEffort } : {}),
+            schema: REPAIR_SCHEMA,
+            toolName: REPAIR_TOOL,
+            maxTokens: 8192,
+            ...(options.plannerReasoningEffort ? { reasoningEffort: options.plannerReasoningEffort } : {}),
           },
-          criticShape,
+          plannerShape,
         );
         addUsage(trace, call);
-        return { call, graded: normalizeCriticItems(call.data) };
-      };
-      let attempt = await grade("");
-      const calls = [callTrace("critic", attempt.call)];
-      const missing = (g: CriticItem[]) => plan.checklist.filter((c) => !g.some((it) => it.id === c.id));
-      let raw: unknown;
-      if (missing(attempt.graded).length > 0) {
-        // Keep what the model actually sent, then ask once more for every item.
-        raw = attempt.call.data;
-        const retry = await grade(`\nReturn an "items" array with exactly one entry for each of these ids: ${plan.checklist.map((c) => c.id).join(", ")}. "pass" must be a boolean.`);
-        calls.push(callTrace("critic", retry.call));
-        if (missing(retry.graded).length < missing(attempt.graded).length) attempt = retry;
+        repair.call = callTrace("planner", call);
+        if (call.data.rationale) repair.rationale = call.data.rationale;
+        repair.proposed = Array.isArray(call.data.edits) ? call.data.edits : [];
+      } catch (err) {
+        repair.error = errorInfo(err).message;
       }
-      const overall = typeof attempt.call.data.overall === "string" ? attempt.call.data.overall : undefined;
-      rt.critic = {
-        items: alignCritic(plan.checklist, attempt.graded),
-        call: calls[0]!,
-        ...(calls.length > 1 ? { retries: calls.slice(1) } : {}),
-        ...(raw !== undefined ? { raw } : {}),
-        ...(overall ? { overall } : {}),
-      };
-    } catch (err) {
-      rt.critic = { items: plan.checklist.map((c) => ({ id: c.id, pass: false, evidence: "critic unavailable" })), error: errorInfo(err).message };
-    }
-    rt.timing.criticMs = Date.now() - tc;
 
-    // 5. Blind recognition: would a viewer who is not told the subject know what it is?
-    if (options.recognition !== false && typeof plan.subject === "string" && plan.subject.trim()) {
-      const recognised = await recogniseBlind(options.llm, criticModel, criticShape, criticView, plan.subject.trim(), options.criticReasoningEffort, trace);
-      if (recognised) rt.checks.push(recognised);
-    }
-
-    await writeProgress();
-    const passed = rt.checks.filter((c) => c.pass).length + rt.critic.items.filter((c) => c.pass).length;
-    const total = rt.checks.length + rt.critic.items.length;
-    rt.score = { passed, total, ratio: total ? passed / total : 0 };
-    // A near-copy of a reference is never preferred over an original drawing, whatever its score.
-    const copied = rt.checks.some((c) => c.id === "reference_copy" && !c.pass);
-    if (!best || (best.copied && !copied) || (best.copied === copied && rt.score.ratio > best.score.ratio)) {
-      best = { round, png: finalPng, graph: structuredClone(queuedGraph), score: rt.score, imagePath: rt.imagePath, copied };
-    }
-    const allPass = !rt.critic.error && passed === total;
-    if (allPass) {
-      rt.durationMs = Date.now() - roundStart;
-      trace.stopReason = "all-pass";
-      break;
-    }
-    if (round === limits.maxRounds) {
-      rt.durationMs = Date.now() - roundStart;
-      trace.stopReason = "max-rounds";
-      break;
-    }
-    if (trace.totals.costUsd >= limits.maxCostUsd) {
-      rt.durationMs = Date.now() - roundStart;
-      trace.stopReason = "cost-limit";
-      break;
-    }
-
-    // 5. Repair.
-    rt.phase = "repairing";
-    await writeProgress();
-    const tr = Date.now();
-    const repair: NonNullable<RoundTrace["repair"]> = { proposed: [], applied: [], rejected: [] };
-    rt.repair = repair;
-    try {
-      log(`round ${round}: planning repairs`);
-      const call = await options.llm.structured<{ rationale?: string; edits?: unknown[] }>(
-        {
-          model: plannerModel,
-          system: REPAIR_SYSTEM,
-          content: [
-            { type: "image", mime: "image/png", base64: criticView.toString("base64") },
-            {
-              type: "text",
-              text:
-                repairUserText(request, plan.checklist, doc, rt, caps, trace.rounds, keyColor, cutout?.method, backdrops) +
-                ([...shapeRefs, ...setRefs].length
-                  ? `\nReferences in use (drop_reference takes these ids): ${[...shapeRefs.map((r) => `${r.id} (shape)`), ...setRefs.map((r) => `${r.id} (set)`)].join(", ")}.`
-                  : ""),
-            },
-          ],
-          schema: REPAIR_SCHEMA,
-          toolName: REPAIR_TOOL,
-          maxTokens: 8192,
-          ...(options.plannerReasoningEffort ? { reasoningEffort: options.plannerReasoningEffort } : {}),
-        },
-        plannerShape,
-      );
-      addUsage(trace, call);
-      repair.call = callTrace("planner", call);
-      if (call.data.rationale) repair.rationale = call.data.rationale;
-      repair.proposed = Array.isArray(call.data.edits) ? call.data.edits : [];
-    } catch (err) {
-      repair.error = errorInfo(err).message;
-    }
-
-    for (const raw of repair.proposed) {
-      try {
-        const edit = parsePlannerEdit(raw);
-        if (FIXED_FOR_DISTILLED.has(edit.op) && (spec?.distilled || doc.kind === "edit")) {
-          throw new GraphEditError(edit.op, `${spec?.label ?? doc.family} is distilled: steps, cfg, sampler and scheduler are fixed`);
-        }
-        switch (edit.op) {
-          case "set_prompt":
-            subjectPrompt = stripKeyedPrompt(edit.text);
-            doc = reprompt();
-            break;
-          case "set_negative_prompt":
-            subjectNegative = edit.text.replace(`, ${KEY_NEGATIVE}`, "");
-            if (doc.kind === "edit" || !doc.roles.negative) {
-              throw new GraphEditError(edit.op, `${spec?.label ?? doc.family} ignores the negative prompt; state the requirement in set_prompt`);
-            }
-            doc = applyEdit(doc, { op: "set_negative_prompt", text: composeNegative() }, info);
-            break;
-          case "set_key_color":
-            if (!request.transparent) throw new GraphEditError(edit.op, "the request does not need transparency");
-            if (!backdrops[edit.hex]) {
-              throw new GraphEditError(edit.op, `with ${cutout?.method === "matte" ? "matting" : "chroma keying"}, hex must be one of ${Object.keys(backdrops).join(", ")}`);
-            }
-            keyColor = edit.hex;
-            if (referenceNames.length) {
-              // The references are sent on the backdrop: send them again on the new one.
+      for (const raw of repair.proposed) {
+        try {
+          const edit = parsePlannerEdit(raw);
+          if (FIXED_FOR_DISTILLED.has(edit.op) && (spec?.distilled || doc.kind === "edit")) {
+            throw new GraphEditError(edit.op, `${spec?.label ?? doc.family} is distilled: steps, cfg, sampler and scheduler are fixed`);
+          }
+          switch (edit.op) {
+            case "set_prompt":
+              subjectPrompt = stripKeyedPrompt(edit.text);
+              doc = reprompt();
+              break;
+            case "set_negative_prompt":
+              subjectNegative = edit.text.replace(`, ${KEY_NEGATIVE}`, "");
+              if (doc.kind === "edit" || !doc.roles.negative) {
+                throw new GraphEditError(edit.op, `${spec?.label ?? doc.family} ignores the negative prompt; state the requirement in set_prompt`);
+              }
+              doc = applyEdit(doc, { op: "set_negative_prompt", text: composeNegative() }, info);
+              break;
+            case "set_key_color":
+              if (!request.transparent) throw new GraphEditError(edit.op, "the request does not need transparency");
+              if (!backdrops[edit.hex]) {
+                throw new GraphEditError(edit.op, `with ${cutout?.method === "matte" ? "matting" : "chroma keying"}, hex must be one of ${Object.keys(backdrops).join(", ")}`);
+              }
+              keyColor = edit.hex;
+              if (referenceNames.length) {
+                // The references are sent on the backdrop: send them again on the new one.
+                await uploadReferences();
+                doc = buildBase(Number(describeDoc(doc).seed ?? seed));
+              } else {
+                doc = reprompt();
+              }
+              break;
+            case "drop_reference": {
+              const before = shapeRefs.length + setRefs.length;
+              shapeRefs = shapeRefs.filter((r) => r.id !== edit.id);
+              setRefs = setRefs.filter((r) => r.id !== edit.id);
+              if (shapeRefs.length + setRefs.length === before) {
+                throw new GraphEditError(edit.op, `no reference "${edit.id}" is in use (in use: ${[...shapeRefs, ...setRefs].map((r) => r.id).join(", ") || "none"})`);
+              }
+              if (setRefs.length === 0) plan.checklist = plan.checklist.filter((c) => c.id !== SET_CONSISTENCY_ITEM.id);
+              refTrace.dropped = [...(refTrace.dropped ?? []), { id: edit.id, round }];
               await uploadReferences();
               doc = buildBase(Number(describeDoc(doc).seed ?? seed));
-            } else {
-              doc = reprompt();
+              break;
             }
-            break;
-          case "drop_reference": {
-            const before = shapeRefs.length + setRefs.length;
-            shapeRefs = shapeRefs.filter((r) => r.id !== edit.id);
-            setRefs = setRefs.filter((r) => r.id !== edit.id);
-            if (shapeRefs.length + setRefs.length === before) {
-              throw new GraphEditError(edit.op, `no reference "${edit.id}" is in use (in use: ${[...shapeRefs, ...setRefs].map((r) => r.id).join(", ") || "none"})`);
+            case "edit_previous": {
+              if (!previousRaw) throw new GraphEditError(edit.op, "no previous image");
+              if (!editModel) throw new GraphEditError(edit.op, "no instruction-editing model is installed; use img2img_from_previous or inpaint_previous");
+              const up = await options.comfy.uploadImage(previousRaw, `comfy-agent-${trace.id.slice(0, 8)}-r${round}-edit.png`);
+              const instruction = keyColor
+                ? `${edit.instruction.replace(/\s+$/, "").replace(/([^.!?])$/, "$1.")} Keep the plain flat ${backdropName(keyColor) ?? "key-colour"} background unchanged.`
+                : edit.instruction;
+              doc = applyEdit(doc, { op: "edit_with_instruction", image: up.name, instruction }, info);
+              break;
             }
-            if (setRefs.length === 0) plan.checklist = plan.checklist.filter((c) => c.id !== SET_CONSISTENCY_ITEM.id);
-            refTrace.dropped = [...(refTrace.dropped ?? []), { id: edit.id, round }];
-            await uploadReferences();
-            doc = buildBase(Number(describeDoc(doc).seed ?? seed));
-            break;
+            case "img2img_from_previous": {
+              if (!previousRaw) throw new GraphEditError(edit.op, "no previous image");
+              const up = await options.comfy.uploadImage(previousRaw, `comfy-agent-${trace.id.slice(0, 8)}-r${round}.png`);
+              doc = applyEdit(doc, { op: "use_img2img", image: up.name, denoise: edit.denoise }, info);
+              break;
+            }
+            case "inpaint_previous": {
+              if (!previousRaw) throw new GraphEditError(edit.op, "no previous image");
+              const prev = decodePng(previousRaw);
+              const up = await options.comfy.uploadImage(previousRaw, `comfy-agent-${trace.id.slice(0, 8)}-r${round}.png`);
+              const mask = await options.comfy.uploadImage(
+                encodePng(rectMask(prev.width, prev.height, edit.rect, Math.round(Math.min(prev.width, prev.height) * 0.03))),
+                `comfy-agent-${trace.id.slice(0, 8)}-r${round}-mask.png`,
+              );
+              doc = applyEdit(doc, { op: "use_inpaint", image: up.name, mask: mask.name, denoise: edit.denoise }, info);
+              break;
+            }
+            default:
+              doc = applyEdit(doc, edit, info);
           }
-          case "edit_previous": {
-            if (!previousRaw) throw new GraphEditError(edit.op, "no previous image");
-            if (!editModel) throw new GraphEditError(edit.op, "no instruction-editing model is installed; use img2img_from_previous or inpaint_previous");
-            const up = await options.comfy.uploadImage(previousRaw, `comfy-agent-${trace.id.slice(0, 8)}-r${round}-edit.png`);
-            const instruction = keyColor
-              ? `${edit.instruction.replace(/\s+$/, "").replace(/([^.!?])$/, "$1.")} Keep the plain flat ${backdropName(keyColor) ?? "key-colour"} background unchanged.`
-              : edit.instruction;
-            doc = applyEdit(doc, { op: "edit_with_instruction", image: up.name, instruction }, info);
-            break;
-          }
-          case "img2img_from_previous": {
-            if (!previousRaw) throw new GraphEditError(edit.op, "no previous image");
-            const up = await options.comfy.uploadImage(previousRaw, `comfy-agent-${trace.id.slice(0, 8)}-r${round}.png`);
-            doc = applyEdit(doc, { op: "use_img2img", image: up.name, denoise: edit.denoise }, info);
-            break;
-          }
-          case "inpaint_previous": {
-            if (!previousRaw) throw new GraphEditError(edit.op, "no previous image");
-            const prev = decodePng(previousRaw);
-            const up = await options.comfy.uploadImage(previousRaw, `comfy-agent-${trace.id.slice(0, 8)}-r${round}.png`);
-            const mask = await options.comfy.uploadImage(
-              encodePng(rectMask(prev.width, prev.height, edit.rect, Math.round(Math.min(prev.width, prev.height) * 0.03))),
-              `comfy-agent-${trace.id.slice(0, 8)}-r${round}-mask.png`,
-            );
-            doc = applyEdit(doc, { op: "use_inpaint", image: up.name, mask: mask.name, denoise: edit.denoise }, info);
-            break;
-          }
-          default:
-            doc = applyEdit(doc, edit, info);
+          repair.applied.push(edit);
+        } catch (err) {
+          repair.rejected.push({ edit: raw, error: errorInfo(err).message });
         }
-        repair.applied.push(edit);
-      } catch (err) {
-        repair.rejected.push({ edit: raw, error: errorInfo(err).message });
       }
+      rt.timing.plannerMs = Date.now() - tr;
+      rt.durationMs = Date.now() - roundStart;
+      await writeProgress();
     }
-    rt.timing.plannerMs = Date.now() - tr;
-    rt.durationMs = Date.now() - roundStart;
-    await writeProgress();
-  }
 
-  for (const r of trace.rounds) r.phase = "done";
-  const finished = Date.now();
-  trace.finishedAt = new Date(finished).toISOString();
-  trace.totals.durationMs = finished - startedAt;
-  if (!best) throw new ComfyAgentError("COMFY_MISSING_OUTPUT", "the asset loop produced no image");
-  trace.best = { round: best.round, score: best.score, ...(best.imagePath ? { imagePath: best.imagePath } : {}) };
-  const tracePathAbs = path.join(options.workDir, "trace.json");
-  await writeFile(tracePathAbs, JSON.stringify(trace, null, 2));
-  return { ok: trace.stopReason === "all-pass", png: best.png, graph: best.graph, trace };
+    finish();
+    if (!best) throw new ComfyAgentError("COMFY_MISSING_OUTPUT", "the asset loop produced no image");
+    trace.best = { round: best.round, score: best.score, ...(best.imagePath ? { imagePath: best.imagePath } : {}) };
+    const tracePathAbs = path.join(options.workDir, "trace.json");
+    await writeFile(tracePathAbs, JSON.stringify(trace, null, 2));
+    return { ok: trace.stopReason === "all-pass", png: best.png, graph: best.graph, trace };
+  } catch (err) {
+    finish();
+    trace.stopReason = options.signal?.aborted ? "aborted" : "error";
+    trace.error = errorInfo(err);
+    await writeFile(path.join(options.workDir, "trace.json"), JSON.stringify(trace, null, 2)).catch(() => undefined);
+    throw err;
+  }
 }
 
 // ---------------------------------------------------------------------------
