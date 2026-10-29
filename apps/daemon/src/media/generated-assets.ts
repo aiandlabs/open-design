@@ -129,8 +129,13 @@ export async function listGeneratedAssets(projectDir: string): Promise<Generated
 /**
  * Asset loops that are still running: `.comfy-agent/<name>/trace.json` files
  * the loop rewrites after each round and marks `running` until it finishes.
+ * With `isRunning`, a trace marked running whose loop is not running (the
+ * daemon stopped mid-loop) is left out.
  */
-export async function listGeneratingAssets(projectDir: string): Promise<GeneratingAsset[]> {
+export async function listGeneratingAssets(
+  projectDir: string,
+  isRunning?: (workDir: string) => boolean,
+): Promise<GeneratingAsset[]> {
   const root = path.join(projectDir, '.comfy-agent');
   let entries;
   try {
@@ -145,6 +150,7 @@ export async function listGeneratingAssets(projectDir: string): Promise<Generati
     try {
       const trace = JSON.parse(await readFile(path.join(projectDir, tracePath), 'utf8')) as TraceFile & { running?: unknown; startedAt?: unknown };
       if (trace.running !== true) continue;
+      if (isRunning && !isRunning(path.join(root, e.name))) continue;
       out.push({
         workDir: `.comfy-agent/${e.name}`,
         tracePath,

@@ -12,6 +12,7 @@ import {
   selectSetReferences,
   setGeneratedAssetReview,
 } from '../../src/media/generated-assets.js';
+import { assetLoopRunning, trackAssetLoop } from '../../src/media/asset-loops.js';
 
 let dir = '';
 beforeEach(async () => {
@@ -114,6 +115,28 @@ describe('assets being generated', () => {
     expect(await listGeneratingAssets(dir)).toEqual([
       { workDir: '.comfy-agent/hero', tracePath: '.comfy-agent/hero/trace.json', prompt: 'a hero photo', kind: 'icon', set: 'food', startedAt: '2026-10-29T01:00:00.000Z' },
     ]);
+  });
+
+  it('skips a trace still marked running when no loop in this daemon is running it (a loop cut off by a restart)', async () => {
+    await mkdir(path.join(dir, '.comfy-agent', 'live'), { recursive: true });
+    await writeFile(path.join(dir, '.comfy-agent', 'live', 'trace.json'), JSON.stringify({ running: true, rounds: [{}] }));
+    await mkdir(path.join(dir, '.comfy-agent', 'stale'), { recursive: true });
+    await writeFile(path.join(dir, '.comfy-agent', 'stale', 'trace.json'), JSON.stringify({ running: true, rounds: [{}] }));
+    const live = path.join(dir, '.comfy-agent', 'live');
+    const listed = await listGeneratingAssets(dir, (workDir) => workDir === live);
+    expect(listed.map((a) => a.workDir)).toEqual(['.comfy-agent/live']);
+  });
+
+  it('knows which asset loops this daemon is running', async () => {
+    let finish!: () => void;
+    const loop = trackAssetLoop('/p/.comfy-agent/hero', new Promise<void>((r) => (finish = r)));
+    expect(assetLoopRunning('/p/.comfy-agent/hero')).toBe(true);
+    expect(assetLoopRunning('/p/.comfy-agent/other')).toBe(false);
+    finish();
+    await loop;
+    expect(assetLoopRunning('/p/.comfy-agent/hero')).toBe(false);
+    await trackAssetLoop('/p/.comfy-agent/bad', Promise.reject(new Error('boom'))).catch(() => undefined);
+    expect(assetLoopRunning('/p/.comfy-agent/bad')).toBe(false);
   });
 
   it('is empty when nothing is being generated', async () => {

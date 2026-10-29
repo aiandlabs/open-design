@@ -38,6 +38,7 @@ import {
   toApiWorkflow,
   type ComfyAgentConfig,
 } from '@open-design/comfy-agent';
+import { trackAssetLoop } from './asset-loops.js';
 
 export const COMFYUI_AGENT_MODEL = 'comfyui-agent';
 export const COMFYUI_WORKFLOW_MODEL = 'comfyui-workflow';
@@ -235,7 +236,7 @@ export async function renderComfyUI(input: {
           set: await loadSetReferences(input.projectDir, { ...(opts.set ? { set: opts.set } : {}), exclude: assetPath }, MAX_SET_REFERENCES),
         }
       : undefined;
-    const result = await generateAsset(
+    const result = await trackAssetLoop(workDir, generateAsset(
       {
         prompt: input.prompt,
         width: size.width,
@@ -259,7 +260,7 @@ export async function renderComfyUI(input: {
         ...(references ? { references } : {}),
         ...(input.onProgress ? { onProgress: input.onProgress } : {}),
       },
-    );
+    ));
     const trace = { ...result.trace, asset: assetPath, ...(opts.set ? { set: opts.set } : {}) };
     await writeFile(tracePath, JSON.stringify(trace, null, 2));
     const best = result.trace.best;

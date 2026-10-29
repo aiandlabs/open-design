@@ -54,6 +54,7 @@ import { scaffoldHyperFramesComposition } from '../media/hyperframes-scaffold.js
 import { assignMediaTaskBatches } from '../media/task-batches.js';
 import { mediaTaskErrorFromFailure } from '../media/task-error.js';
 import { GeneratedAssetNotFoundError, listGeneratedAssets, listGeneratingAssets, setGeneratedAssetReview } from '../media/generated-assets.js';
+import { assetLoopRunning } from '../media/asset-loops.js';
 import {
   parseGeneratedAssetReviewRequest,
   type GeneratedAssetReviewResponse,
@@ -1131,7 +1132,7 @@ export function registerMediaRoutes(app: Express, ctx: RegisterMediaRoutesDeps) 
     if (!project) return sendApiError(res, 404, 'PROJECT_NOT_FOUND', 'project not found');
     if (!await ctx.authorizeProjectRequest(req, res, project.id, { mode: 'read' })) return;
     const projectDir = resolveProjectDir(PROJECTS_DIR, project.id);
-    const body: GeneratedAssetsResponse = { assets: await listGeneratedAssets(projectDir), generating: await listGeneratingAssets(projectDir) };
+    const body: GeneratedAssetsResponse = { assets: await listGeneratedAssets(projectDir), generating: await listGeneratingAssets(projectDir, assetLoopRunning) };
     res.json(body);
   });
 
