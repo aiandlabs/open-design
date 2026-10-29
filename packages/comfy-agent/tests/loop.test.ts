@@ -277,6 +277,34 @@ describe("generateAsset", () => {
     });
   });
 
+  it("writes the trace after every round, marked running, so a host can show progress", async () => {
+    const seen: Array<{ rounds: number; graded: boolean; running: unknown } | null> = [];
+    let dir = "";
+    const { comfy, workDir } = await setup({
+      render: () => {
+        try {
+          const t = JSON.parse(readFileSync(path.join(dir, "trace.json"), "utf8"));
+          seen.push({ rounds: t.rounds.length, graded: Boolean(t.rounds[0]?.critic), running: t.running });
+        } catch {
+          seen.push(null);
+        }
+        return lanternPng(768, 768);
+      },
+    });
+    dir = workDir;
+    const { llm } = stubLlm({
+      plan: PLAN,
+      critic: (n) => ({ items: [{ id: "count", pass: n > 0 }, { id: "background", pass: true }] }),
+      repair: () => ({ rationale: "fix", edits: [{ op: "set_seed", seed: 2 }] }),
+    });
+    const res = await generateAsset({ prompt: "lantern", width: 768, height: 768, seed: 1 }, { comfy, llm, plannerModel: "test/planner", criticModel: "test/critic", workDir, recognition: false });
+    expect(seen[0]).toBeNull(); // nothing before round 1
+    expect(seen[1]).toEqual({ rounds: 1, graded: true, running: true });
+    const final = JSON.parse(readFileSync(path.join(workDir, "trace.json"), "utf8"));
+    expect(final.running).toBeUndefined();
+    expect(final.rounds).toHaveLength(res.trace.rounds.length);
+  });
+
   describe("blind recognition", () => {
     const SUBJECT_PLAN = { ...PLAN, subject: "onigiri (Japanese rice ball)" };
 

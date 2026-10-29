@@ -574,6 +574,12 @@ export async function generateAsset(request: AssetRequest, options: AssetLoopOpt
     totals: { durationMs: 0, queueWaitMs: 0, inputTokens: 0, outputTokens: 0, reportedCostUsd: null, estimatedCostUsd: 0, costUsd: 0 },
   };
   addUsage(trace, planCall);
+  // Progress for hosts that show the loop while it runs: the same trace,
+  // rewritten after each round's grading and repair, marked running. The final
+  // write at the end replaces it without the mark. A failed write never stops the loop.
+  const writeProgress = async () => {
+    await writeFile(path.join(options.workDir, "trace.json"), JSON.stringify({ ...trace, running: true })).catch(() => undefined);
+  };
 
   let best: { round: number; png: Buffer; graph: ApiWorkflow; score: RoundTrace["score"]; imagePath?: string; copied: boolean } | null = null;
   // The set's icons, shown to the critic for the set_consistency item.
@@ -756,6 +762,7 @@ export async function generateAsset(request: AssetRequest, options: AssetLoopOpt
       if (recognised) rt.checks.push(recognised);
     }
 
+    await writeProgress();
     const passed = rt.checks.filter((c) => c.pass).length + rt.critic.items.filter((c) => c.pass).length;
     const total = rt.checks.length + rt.critic.items.length;
     rt.score = { passed, total, ratio: total ? passed / total : 0 };
@@ -899,6 +906,7 @@ export async function generateAsset(request: AssetRequest, options: AssetLoopOpt
     }
     rt.timing.plannerMs = Date.now() - tr;
     rt.durationMs = Date.now() - roundStart;
+    await writeProgress();
   }
 
   const finished = Date.now();
