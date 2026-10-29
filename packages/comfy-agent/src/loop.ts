@@ -62,6 +62,12 @@ import {
   CRITIC_SCHEMA,
   CRITIC_SYSTEM,
   CRITIC_TOOL,
+  MATCH_SCHEMA,
+  MATCH_SYSTEM,
+  MATCH_TOOL,
+  RECOGNISE_SCHEMA,
+  RECOGNISE_SYSTEM,
+  RECOGNISE_TOOL,
   KEY_COLORS,
   KEY_NEGATIVE,
   MATTE_BACKDROPS,
@@ -173,6 +179,12 @@ export type AssetLoopOptions = {
   runTimeoutMs?: number;
   /** Reference images (FLUX.2 [klein] only; ignored, with a note in the trace, for other models). */
   references?: ReferenceOptions;
+  /**
+   * Blind recognition check (default on): each round, a vision model that is
+   * not told the subject names what the image shows, and the round fails when
+   * a typical viewer would not recognise the planned subject.
+   */
+  recognition?: boolean;
   onProgress?: (message: string) => void;
   signal?: AbortSignal;
 };
@@ -307,6 +319,7 @@ type PlannerEdit =
   | { op: "drop_reference"; id: string };
 
 type PlanOutput = {
+  subject?: string;
   references?: { id?: unknown; why?: unknown }[];
   reference_note?: string;
   checklist: ChecklistItem[];
@@ -734,6 +747,12 @@ export async function generateAsset(request: AssetRequest, options: AssetLoopOpt
     }
     rt.timing.criticMs = Date.now() - tc;
 
+    // 5. Blind recognition: would a viewer who is not told the subject know what it is?
+    if (options.recognition !== false && typeof plan.subject === "string" && plan.subject.trim()) {
+      const recognised = await recogniseBlind(options.llm, criticModel, criticShape, criticView, plan.subject.trim(), options.criticReasoningEffort, trace);
+      if (recognised) rt.checks.push(recognised);
+    }
+
     const passed = rt.checks.filter((c) => c.pass).length + rt.critic.items.filter((c) => c.pass).length;
     const total = rt.checks.length + rt.critic.items.length;
     rt.score = { passed, total, ratio: total ? passed / total : 0 };
@@ -1063,6 +1082,65 @@ function normalizePlan(raw: PlanOutput, request: AssetRequest, backdrops: Record
     negative_prompt: [typeof raw.negative_prompt === "string" ? raw.negative_prompt.trim() : "", request.negative?.trim() ?? ""].filter(Boolean).join(", "),
     ...(key && backdrops[key] ? { key_color: key } : { key_color: undefined }),
   };
+}
+
+/**
+ * The `recognisable` check: a vision model sees only the image and names it,
+ * then a text call decides whether that name is the planned subject. Returns
+ * undefined when either call fails, so an outage never fails a round.
+ */
+async function recogniseBlind(
+  llm: AiandClient,
+  model: string,
+  shape: ApiShape,
+  view: Buffer,
+  subject: string,
+  reasoningEffort: string | undefined,
+  trace: AssetTrace,
+): Promise<CheckResult | undefined> {
+  try {
+    const seen = await llm.structured<{ name?: unknown; could_also_be?: unknown }>(
+      {
+        model,
+        system: RECOGNISE_SYSTEM,
+        content: [
+          { type: "image", mime: "image/png", base64: view.toString("base64") },
+          { type: "text", text: `What does this image show? Call ${RECOGNISE_TOOL}.` },
+        ],
+        schema: RECOGNISE_SCHEMA,
+        toolName: RECOGNISE_TOOL,
+        maxTokens: 1024,
+        ...(reasoningEffort ? { reasoningEffort } : {}),
+      },
+      shape,
+    );
+    addUsage(trace, seen);
+    const name = typeof seen.data.name === "string" ? seen.data.name.trim() : "";
+    if (!name) return undefined;
+    const alts = Array.isArray(seen.data.could_also_be) ? seen.data.could_also_be.filter((a): a is string => typeof a === "string").slice(0, 3) : [];
+    const verdict = await llm.structured<{ match?: unknown; reason?: unknown }>(
+      {
+        model,
+        system: MATCH_SYSTEM,
+        content: [{ type: "text", text: `Intended subject: ${subject}\nThe viewer named it: ${name}${alts.length ? ` (could also be: ${alts.join(", ")})` : ""}\nCall ${MATCH_TOOL}.` }],
+        schema: MATCH_SCHEMA,
+        toolName: MATCH_TOOL,
+        maxTokens: 512,
+      },
+      shape,
+    );
+    addUsage(trace, verdict);
+    const match = verdict.data.match === true || verdict.data.match === "true";
+    return {
+      id: "recognisable",
+      pass: match,
+      detail: match
+        ? `a viewer who was not told the subject named it "${name}"`
+        : `a viewer who was not told the subject named it "${name}"${alts.length ? ` (or ${alts.join(", ")})` : ""}, not ${subject}`,
+    };
+  } catch {
+    return undefined;
+  }
 }
 
 /** Settings a distilled model (or an edit graph) runs with fixed values. */

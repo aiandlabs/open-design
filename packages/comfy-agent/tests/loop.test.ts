@@ -11,7 +11,7 @@ import { alphaStats, createImage, decodePng, encodePng, type RgbaImage } from ".
 import { AiandClient } from "../src/llm.js";
 import { generateAsset } from "../src/loop.js";
 import { createToolHandler } from "../src/mcp.js";
-import { CRITIC_TOOL, normalizeCriticItems, PLAN_TOOL, PLANNER_SYSTEM, REPAIR_TOOL } from "../src/prompts.js";
+import { CRITIC_TOOL, MATCH_TOOL, normalizeCriticItems, PLAN_TOOL, PLANNER_SYSTEM, RECOGNISE_TOOL, REPAIR_TOOL } from "../src/prompts.js";
 import type { ApiWorkflow } from "../src/types.js";
 import { startFakeComfy, type FakeComfy, type FakeComfyOptions } from "./fixtures/fake-comfy.js";
 import { FAMILY_NODES } from "./fixtures/object-info-families.js";
@@ -26,10 +26,18 @@ afterEach(async () => {
 type ToolCallLog = { tool: string; body: Record<string, unknown> };
 
 /** An ai& API stand-in: answers by the forced tool name with scripted JSON. */
-function stubLlm(script: { plan: unknown; critic: (n: number, body: Record<string, unknown>) => unknown; repair?: (n: number, body: Record<string, unknown>) => unknown }) {
+function stubLlm(script: {
+  plan: unknown;
+  critic: (n: number, body: Record<string, unknown>) => unknown;
+  repair?: (n: number, body: Record<string, unknown>) => unknown;
+  recognise?: (n: number, body: Record<string, unknown>) => unknown;
+  match?: (n: number, body: Record<string, unknown>) => unknown;
+}) {
   const log: ToolCallLog[] = [];
   let critic = 0;
   let repair = 0;
+  let recognise = 0;
+  let match = 0;
   const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
     const url = String(input);
     if (url.endsWith("/models")) {
@@ -46,6 +54,8 @@ function stubLlm(script: { plan: unknown; critic: (n: number, body: Record<strin
     if (tool === PLAN_TOOL) args = script.plan;
     else if (tool === CRITIC_TOOL) args = script.critic(critic++, body);
     else if (tool === REPAIR_TOOL) args = script.repair?.(repair++, body) ?? { rationale: "none", edits: [] };
+    else if (tool === RECOGNISE_TOOL) args = script.recognise?.(recognise++, body) ?? { name: "the requested subject" };
+    else if (tool === MATCH_TOOL) args = script.match?.(match++, body) ?? { match: true, reason: "same thing" };
     return new Response(JSON.stringify({
       model: body.model,
       choices: [{ message: { tool_calls: [{ type: "function", function: { name: tool, arguments: JSON.stringify(args) } }] } }],
@@ -267,6 +277,39 @@ describe("generateAsset", () => {
     });
   });
 
+  describe("blind recognition", () => {
+    const SUBJECT_PLAN = { ...PLAN, subject: "onigiri (Japanese rice ball)" };
+
+    it("fails a round a viewer would not recognise, without telling the viewer the subject, and repairs from what they saw", async () => {
+      const { comfy, workDir } = await setup({ render: () => lanternPng(768, 768) });
+      const { llm, log } = stubLlm({
+        plan: SUBJECT_PLAN,
+        critic: () => ({ items: [{ id: "count", pass: true }, { id: "background", pass: true }] }),
+        recognise: (n) => (n === 0 ? { name: "a bar of soap", could_also_be: ["a candle"] } : { name: "an onigiri rice ball" }),
+        match: (n) => (n === 0 ? { match: false, reason: "soap is not food" } : { match: true, reason: "same" }),
+        repair: () => ({ rationale: "restore nori", edits: [{ op: "set_prompt", text: "an onigiri with dark nori" }] }),
+      });
+      const res = await generateAsset({ prompt: "an onigiri icon, pastel", width: 768, height: 768, seed: 1 }, { comfy, llm, plannerModel: "test/planner", criticModel: "test/critic", workDir });
+      const r1 = res.trace.rounds[0]!;
+      expect(r1.checks.find((c) => c.id === "recognisable")).toMatchObject({ pass: false });
+      expect(r1.checks.find((c) => c.id === "recognisable")!.detail).toContain("a bar of soap");
+      // The viewer never sees the subject or the prompt.
+      const blind = JSON.stringify(log.find((l) => l.tool === RECOGNISE_TOOL)!.body);
+      expect(blind).not.toMatch(/onigiri|rice ball|pastel/i);
+      expect(JSON.stringify(log.find((l) => l.tool === REPAIR_TOOL)!.body)).toContain("a bar of soap");
+      expect(res.trace.stopReason).toBe("all-pass");
+      expect(res.trace.rounds[1]!.checks.find((c) => c.id === "recognisable")).toMatchObject({ pass: true });
+    });
+
+    it("can be turned off", async () => {
+      const { comfy, workDir } = await setup({ render: () => lanternPng(768, 768) });
+      const { llm, log } = stubLlm({ plan: SUBJECT_PLAN, critic: () => ({ items: [{ id: "count", pass: true }, { id: "background", pass: true }] }) });
+      const res = await generateAsset({ prompt: "an onigiri icon", width: 768, height: 768, seed: 1 }, { comfy, llm, plannerModel: "test/planner", criticModel: "test/critic", workDir, recognition: false });
+      expect(log.some((l) => l.tool === RECOGNISE_TOOL)).toBe(false);
+      expect(res.trace.rounds[0]!.checks.some((c) => c.id === "recognisable")).toBe(false);
+    });
+  });
+
   describe("icon references", () => {
     const kleinInfo = () => ({ ...makeObjectInfo(), ...structuredClone(FAMILY_NODES), ...structuredClone(MATTING_NODES) });
     /** A matted subject: a coloured disc, optionally with a notch, on a transparent canvas. */
@@ -340,7 +383,7 @@ describe("generateAsset", () => {
       );
       const body = JSON.stringify(log.find((l) => l.tool === PLAN_TOOL)!.body);
       // The tool schema sent with candidates requires an answer about references.
-      expect(body).toMatch(/"required":\["checklist","positive_prompt","negative_prompt","references"\]/);
+      expect(body).toMatch(/"required":\["checklist","positive_prompt","negative_prompt","subject","references"\]/);
       expect(JSON.stringify(log.find((l) => l.tool === PLAN_TOOL)!.body)).toMatch(/When a candidate shows the requested subject, choose it/);
     });
 
@@ -375,7 +418,8 @@ describe("generateAsset", () => {
 
     it("tells the planner its own checklist items must not contradict the request or each other", () => {
       expect(PLANNER_SYSTEM).toMatch(/must not contradict the request or each other/);
-      expect(PLANNER_SYSTEM).toMatch(/in the requested palette/);
+      expect(PLANNER_SYSTEM).toMatch(/keep their real colours/);
+      expect(PLANNER_SYSTEM).not.toMatch(/in the requested palette \("a soft muted-green nori wrap"\)/);
     });
 
     it("does not require a reference answer when no candidates are listed", async () => {
@@ -386,7 +430,7 @@ describe("generateAsset", () => {
         { comfy, llm, plannerModel: "test/planner", criticModel: "test/critic", workDir },
       );
       const body = JSON.stringify(log.find((l) => l.tool === PLAN_TOOL)!.body);
-      expect(body).toMatch(/"required":\["checklist","positive_prompt","negative_prompt"\]/);
+      expect(body).toMatch(/"required":\["checklist","positive_prompt","negative_prompt","subject"\]/);
     });
 
     it("fails an output that copies its reference, drops the reference on repair, and does not return the copy", async () => {

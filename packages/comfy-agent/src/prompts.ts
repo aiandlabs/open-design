@@ -32,6 +32,8 @@ export function backdropName(hex: string): string | undefined {
 export const PLAN_TOOL = "submit_plan";
 export const REPAIR_TOOL = "submit_edits";
 export const CRITIC_TOOL = "submit_grades";
+export const RECOGNISE_TOOL = "submit_recognition";
+export const MATCH_TOOL = "submit_match";
 
 export const PLANNER_SYSTEM = `You plan image generation on a local ComfyUI server. The user message names the model family in use.
 You never draw. You write prompts and choose sampling settings, and you turn the user's request into a checklist a vision model can verify by looking at the finished image.
@@ -40,7 +42,9 @@ Checklist rules:
 - 3 to 8 items. Each item is one visually checkable fact about the image: subject count, subject identity, colours, composition, background, style, absence of an unwanted element.
 - Write each item as a statement that is true for a correct image ("Exactly one paper lantern is visible").
 - Every explicit requirement in the request (a count, a colour, lighting or time of day, an empty area for text, an absence such as "no text" or "no people") gets its own item, worded as close to the request as possible. Do not drop, soften or merge them; add your own items only after these.
-- Your own items must not contradict the request or each other: the image has to be able to pass every item at once. When a subject's natural colour (nori, coffee, chocolate) would clash with a requested palette, write that part in the requested palette ("a soft muted-green nori wrap"), not as a separate colour rule.
+- Your own items must not contradict the request or each other: the image has to be able to pass every item at once.
+- The features that make the subject recognisable keep their real colours, whatever palette or style is requested: nori is dark, coffee is brown, a stop sign is red. Apply the requested palette and style to everything else (background accents, highlights, secondary parts), and write the checklist that way, so a viewer still knows at once what the subject is.
+- In subject, name what the image shows as an ordinary viewer would name it, in a few words ("onigiri (Japanese rice ball)", "a coffee cup with steam").
 - Do not include size, resolution, file format or transparency items; code checks those.
 - For a transparent asset, grade the cut-out subject only. Never write an item about the key colour or the generation background: it is removed before grading.
 - Use short ids such as "count", "subject", "background", "style".
@@ -64,6 +68,7 @@ Guidance:
   - After edit_previous, a set_prompt starts again from text-to-image with the new prompt.
 - Prompt adherence is weak on sdxl/sd15: raise cfg slightly (at most 9 for SDXL) or steps. Never change steps, cfg, sampler or scheduler for zimage, flux2_klein or ming: they are distilled and those values are fixed.
 - Background not flat or not clean for a transparent asset (a fringe, halo, shadow or leftover background in the cut-out): strengthen the prompt, or set_key_color to an allowed colour further from the subject, or edit_previous ("Make the background plain flat white with no shadow").
+- recognisable failing: a viewer who was not told the subject named the image as something else. Restore the subject's identifying features (its typical shape, its defining colours and parts) and state them first in set_prompt; do not let the style or palette change them.
 - reference_copy failing: the output reproduces a reference image instead of redrawing it. Use drop_reference with that reference's id, and restate the requested style in set_prompt. Do not keep a reference that was copied.
 - Only use samplers, schedulers, LoRAs, checkpoints and upscale models from the lists you are given.
 - Prefer at most 4 edits. Do not repeat an edit that already failed in an earlier round.`;
@@ -121,8 +126,9 @@ export const PLAN_SCHEMA: JsonSchema = {
       items: { type: "object", properties: { id: { type: "string" }, why: { type: "string" } }, required: ["id"] },
     },
     reference_note: { type: "string", description: "Why no reference was chosen, when candidates were listed but none fits." },
+    subject: { type: "string", description: "What the image shows, as an ordinary viewer would name it, in a few words." },
   },
-  required: ["checklist", "positive_prompt", "negative_prompt"],
+  required: ["checklist", "positive_prompt", "negative_prompt", "subject"],
 };
 
 /** The plan schema, with an answer about references required when candidates are listed. */
@@ -310,3 +316,26 @@ function toBool(v: unknown): boolean | undefined {
 }
 
 export const KEY_NEGATIVE = "gradient background, textured background, scenery, environment, cast shadow, floor, vignette";
+
+/**
+ * Blind recognition: the viewer sees only the image, never the request or the
+ * subject, so it cannot grade what it was told to look for.
+ */
+export const RECOGNISE_SYSTEM = `You see one image and nothing else. Say what it shows, as an ordinary person would name it at a glance, in a few words. Then list up to three other things it could be mistaken for. If the image is shown twice (on white and on near-black, split by a thin magenta line), it is one cut-out subject; ignore the backgrounds and the line.`;
+
+export const RECOGNISE_SCHEMA: JsonSchema = {
+  type: "object",
+  properties: {
+    name: { type: "string", description: "What the image shows, in a few words." },
+    could_also_be: { type: "array", items: { type: "string" } },
+  },
+  required: ["name"],
+};
+
+export const MATCH_SYSTEM = `You compare two short descriptions. The first is what an image was meant to show. The second is what a viewer who was not told named it at first sight. Decide whether a typical viewer would recognise the image as the intended subject. Different words for the same thing match ("rice ball" and "onigiri"); a different object does not ("bar of soap" and "onigiri"), even if it has the same shape.`;
+
+export const MATCH_SCHEMA: JsonSchema = {
+  type: "object",
+  properties: { match: { type: "boolean" }, reason: { type: "string" } },
+  required: ["match", "reason"],
+};
