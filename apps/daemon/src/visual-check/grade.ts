@@ -30,6 +30,8 @@ export interface VisualCheckGradeInput {
   checklist?: string[] | undefined;
   brief?: string | undefined;
   briefSource?: 'brief' | 'project-prompt' | undefined;
+  /** BCP 47 language for everything the grader writes; English when absent. */
+  language?: string | undefined;
   model: string;
 }
 
@@ -107,8 +109,17 @@ export function resolveChecklist(input: Pick<VisualCheckGradeInput, 'checklist' 
   return { given, source: 'default', deriveFromBrief: false };
 }
 
+/** English name of a BCP 47 language, for the prompt ("ja" → "Japanese"). */
+function languageName(tag: string): string {
+  try {
+    return new Intl.DisplayNames(['en'], { type: 'language' }).of(tag) ?? tag;
+  } catch {
+    return tag;
+  }
+}
+
 export function buildGradeRequestText(
-  input: Pick<VisualCheckGradeInput, 'checklist' | 'brief' | 'briefSource' | 'images'>,
+  input: Pick<VisualCheckGradeInput, 'checklist' | 'brief' | 'briefSource' | 'images' | 'language'>,
 ): string {
   const { given, deriveFromBrief } = resolveChecklist(input);
   const shots = input.images
@@ -128,6 +139,12 @@ export function buildGradeRequestText(
       `Also derive up to ${MAX_DERIVED_ITEMS} visual requirements that this brief makes checkable in a screenshot (required sections, content, hierarchy, mood, palette). Give them ids d1, d2, ... and grade them after the requirements above. Skip anything already covered above or not visible in a screenshot.`,
     );
   }
+  if (input.language) {
+    lines.push(
+      '',
+      `Write the summary, every item text, evidence and repairHint in ${languageName(input.language)} (${input.language}). Translate the requirement texts above into it, and keep their ids.`,
+    );
+  }
   return lines.join('\n');
 }
 
@@ -141,6 +158,7 @@ export function normalizeGradedItems(
   given: Array<{ id: string; item: string }>,
   viewports: readonly VisualCheckViewportName[],
   allowDerived: boolean,
+  translated = false,
 ): VisualCheckItemResult[] {
   const list: RawItem[] = Array.isArray(raw) ? (raw as RawItem[]) : [];
   const byId = new Map<string, RawItem>();
@@ -172,7 +190,12 @@ export function normalizeGradedItems(
       ...(viewport ? { viewport } : {}),
     };
   };
-  const results = given.map((g) => toResult(g.id, g.item, byId.get(g.id)));
+  // With a requested language the model's own item text is the translation; else keep the given text.
+  const results = given.map((g) => {
+    const entry = byId.get(g.id);
+    const text = translated ? cleanString(entry?.item, 300) || g.item : g.item;
+    return toResult(g.id, text, entry);
+  });
   if (allowDerived) {
     let count = 0;
     for (const [id, entry] of byId) {
@@ -208,7 +231,7 @@ export async function gradeVisualCheck(
     reasoningEffort: 'low',
     temperature: 0,
   });
-  const items = normalizeGradedItems(result.data?.items, given, viewports, deriveFromBrief);
+  const items = normalizeGradedItems(result.data?.items, given, viewports, deriveFromBrief, Boolean(input.language));
   return {
     summary: cleanString(result.data?.summary, 600),
     items,

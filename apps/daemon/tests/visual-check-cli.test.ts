@@ -98,6 +98,12 @@ describe('od visual-check', () => {
     expect(result.stdout).toContain('model: zai-org/glm-5.3-flash (openai) · tokens: 1000 in / 200 out');
   });
 
+  it('passes --language to the request', async () => {
+    const result = await runCli(['index.html', '--language', 'ja']);
+    expect(result.code, result.stderr).toBe(0);
+    expect(JSON.parse(seen[0]!.body)).toMatchObject({ fileName: 'index.html', language: 'ja' });
+  });
+
   it('prints the raw result with --json and sends the run tool token', async () => {
     const result = await runCli(['index.html', '--project', 'p9', '--json'], { env: { OD_TOOL_TOKEN: 'tok-1' } });
     expect(result.code, result.stderr).toBe(0);

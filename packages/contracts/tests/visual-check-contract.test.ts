@@ -49,6 +49,12 @@ describe('visual check request contract', () => {
     expect(() => parseVisualCheckRequest(body)).toThrow();
   });
 
+  it('accepts a BCP 47 language and rejects a malformed one', () => {
+    expect(parseVisualCheckRequest({ fileName: 'index.html', language: 'ja' }).language).toBe('ja');
+    expect(parseVisualCheckRequest({ fileName: 'index.html', language: 'en-GB' }).language).toBe('en-GB');
+    expect(() => parseVisualCheckRequest({ fileName: 'index.html', language: 'Japanese please' })).toThrow(/language/);
+  });
+
   it('maps the CLI --viewport flag', () => {
     expect(visualCheckViewportsFromFlag(undefined)).toEqual(['desktop']);
     expect(visualCheckViewportsFromFlag('mobile')).toEqual(['mobile']);

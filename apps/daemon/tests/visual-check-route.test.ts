@@ -197,6 +197,29 @@ describe('POST /api/projects/:id/visual-check', () => {
     expect(structured.mock.calls[0]![0].content.at(-1).text).not.toContain('b1:');
   });
 
+  it('writes the summary and every item in the requested language, translating the baseline', async () => {
+    const { structured } = await start({
+      modelResponse: {
+        summary: 'ページは問題ありません。',
+        items: [{ id: 'c1', item: '見出しが一行に収まる', pass: true, evidence: '収まっている。', repairHint: '' }],
+      },
+    });
+    const body = (await (await post({ fileName: 'index.html', checklist: ['Headline fits on one line'], language: 'ja' })).json()) as VisualCheckResponse;
+    const text = structured.mock.calls[0]![0].content.at(-1).text as string;
+    expect(text).toMatch(/Write the summary, every item text, evidence and repairHint in Japanese/);
+    expect(body.summary).toBe('ページは問題ありません。');
+    expect(body.items[0]!.item).toBe('見出しが一行に収まる');
+  });
+
+  it('keeps the given requirement text when no language is asked for', async () => {
+    const { structured } = await start({
+      modelResponse: { summary: 'Fine.', items: [{ id: 'c1', item: 'something else', pass: true, evidence: 'Fits.', repairHint: '' }] },
+    });
+    const body = (await (await post({ fileName: 'index.html', checklist: ['Headline fits on one line'] })).json()) as VisualCheckResponse;
+    expect(structured.mock.calls[0]![0].content.at(-1).text).not.toMatch(/Write the summary/);
+    expect(body.items[0]!.item).toBe('Headline fits on one line');
+  });
+
   it('falls back to the project prompt, then to the baseline only', async () => {
     await start({ projectPrompt: 'A launch page for a tea shop' });
     const withPrompt = (await (await post({ fileName: 'index.html' })).json()) as VisualCheckResponse;

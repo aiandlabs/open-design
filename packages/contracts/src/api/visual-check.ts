@@ -35,6 +35,11 @@ export interface VisualCheckRequest {
    * picks a model with vision and tool calling from the live ai& model list.
    */
   model?: string;
+  /**
+   * BCP 47 language for the summary, item texts, evidence and repair hints
+   * (for example `ja`). Baseline items are translated. Defaults to English.
+   */
+  language?: string;
 }
 
 /** Where the checklist the model graded against came from. */
@@ -127,7 +132,7 @@ export function parseVisualCheckRequest(input: unknown): VisualCheckRequest {
     throw new Error('visual check request must be an object');
   }
   const body = input as Record<string, unknown>;
-  const allowed = new Set(['fileName', 'brief', 'checklist', 'viewports', 'model']);
+  const allowed = new Set(['fileName', 'brief', 'checklist', 'viewports', 'model', 'language']);
   for (const key of Object.keys(body)) {
     if (!allowed.has(key)) throw new Error(`unsupported visual check request field: ${key}`);
   }
@@ -169,6 +174,12 @@ export function parseVisualCheckRequest(input: unknown): VisualCheckRequest {
       throw new Error('model must be a non-empty model id');
     }
     out.model = body.model.trim();
+  }
+  if (body.language !== undefined) {
+    if (typeof body.language !== 'string' || !/^[A-Za-z]{2,3}(-[A-Za-z0-9]{2,8})*$/.test(body.language.trim())) {
+      throw new Error('language must be a BCP 47 language tag such as "ja" or "en-GB"');
+    }
+    out.language = body.language.trim();
   }
   return out;
 }

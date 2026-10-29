@@ -88,6 +88,7 @@ export async function runVisualCheck(
     checklist: request.checklist,
     brief,
     briefSource,
+    ...(request.language ? { language: request.language } : {}),
     model,
   });
 

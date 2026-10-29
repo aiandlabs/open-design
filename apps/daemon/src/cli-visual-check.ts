@@ -9,7 +9,7 @@ import {
 } from '@open-design/contracts';
 
 export const VISUAL_CHECK_STRING_FLAGS = new Set([
-  'daemon-url', 'project', 'file', 'brief', 'prompt-file', 'checklist-file', 'viewport', 'model',
+  'daemon-url', 'project', 'file', 'brief', 'prompt-file', 'checklist-file', 'viewport', 'model', 'language',
 ]);
 export const VISUAL_CHECK_BOOLEAN_FLAGS = new Set(['help', 'h', 'json']);
 
@@ -55,6 +55,7 @@ Options:
   --viewport <v>             desktop (default) | mobile | both
   --model <id>               ai& model id with vision and tool calling
                              (default: Settings, then picked from the ai& model list)
+  --language <tag>           Write the results in this language, e.g. ja (default: English)
   --json                     Print the full result as JSON
   --daemon-url <url>         Override daemon URL
 
@@ -125,6 +126,7 @@ export async function runVisualCheckCommand(args: string[], h: VisualCheckCliHel
   try {
     const brief = flags['prompt-file'] ? await h.readTextFile(flags['prompt-file']) : flags.brief;
     if (typeof brief === 'string' && brief.trim()) body.brief = brief.trim();
+    if (typeof flags.language === 'string' && flags.language.trim()) body.language = flags.language.trim();
     if (flags['checklist-file']) {
       const items = (await h.readTextFile(flags['checklist-file']))
         .split(/\r?\n/)
