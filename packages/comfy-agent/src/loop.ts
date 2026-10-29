@@ -233,6 +233,11 @@ export type RoundTrace = {
     error?: string;
   };
   error?: { code: string; message: string };
+  /** Where the round is, for hosts that show the loop live; `done` once the round is over. */
+  phase?: "generating" | "grading" | "repairing" | "done";
+  /** The node ComfyUI is executing, and the sampler's step progress (from ComfyUI's websocket). */
+  runningNode?: string;
+  progress?: { nodeId?: string; value: number; max: number };
 };
 
 /**
@@ -632,8 +637,12 @@ export async function generateAsset(request: AssetRequest, options: AssetLoopOpt
       checks: [],
       score: { passed: 0, total: 0, ratio: 0 },
     };
+    for (const prev of trace.rounds) prev.phase = "done";
+    rt.phase = "generating";
     trace.rounds.push(rt);
     log(`round ${round}: generating`);
+    await writeProgress();
+    let lastProgressWrite = Date.now();
 
     // 2. Run.
     let rawPng: Buffer;
@@ -648,6 +657,13 @@ export async function generateAsset(request: AssetRequest, options: AssetLoopOpt
         queueTimeoutMs: Math.max(1, limits.maxWallTimeMs - (Date.now() - startedAt)),
         ...(options.signal ? { signal: options.signal } : {}),
         onProgress: (e) => {
+          if (e.type === "executing") rt.runningNode = e.nodeId;
+          if (e.type === "progress") rt.progress = { ...(e.nodeId ? { nodeId: e.nodeId } : {}), value: e.value, max: e.max };
+          // At most one progress write a second; the last step is written by the grading write.
+          if ((e.type === "executing" || e.type === "progress") && Date.now() - lastProgressWrite >= 1000) {
+            lastProgressWrite = Date.now();
+            void writeProgress();
+          }
           if (e.type === "started") log(`round ${round}: started after ${Math.round((Date.now() - t) / 1000)} s in the queue`);
           if (e.type === "progress" && e.max > 0 && (e.value === e.max || e.value % 5 === 0)) log(`round ${round}: step ${e.value}/${e.max}`);
         },
@@ -708,6 +724,9 @@ export async function generateAsset(request: AssetRequest, options: AssetLoopOpt
     rt.timing.postProcessMs = Date.now() - tp;
 
     // 4. Critic.
+    rt.phase = "grading";
+    delete rt.runningNode;
+    await writeProgress();
     const tc = Date.now();
     const criticView = encodePng(fitWithin(request.transparent ? cutoutSheet(post.image) : post.image, request.transparent ? 1024 : 768));
     try {
@@ -789,6 +808,8 @@ export async function generateAsset(request: AssetRequest, options: AssetLoopOpt
     }
 
     // 5. Repair.
+    rt.phase = "repairing";
+    await writeProgress();
     const tr = Date.now();
     const repair: NonNullable<RoundTrace["repair"]> = { proposed: [], applied: [], rejected: [] };
     rt.repair = repair;
@@ -909,6 +930,7 @@ export async function generateAsset(request: AssetRequest, options: AssetLoopOpt
     await writeProgress();
   }
 
+  for (const r of trace.rounds) r.phase = "done";
   const finished = Date.now();
   trace.finishedAt = new Date(finished).toISOString();
   trace.totals.durationMs = finished - startedAt;

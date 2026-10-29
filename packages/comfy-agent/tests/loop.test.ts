@@ -298,11 +298,32 @@ describe("generateAsset", () => {
       repair: () => ({ rationale: "fix", edits: [{ op: "set_seed", seed: 2 }] }),
     });
     const res = await generateAsset({ prompt: "lantern", width: 768, height: 768, seed: 1 }, { comfy, llm, plannerModel: "test/planner", criticModel: "test/critic", workDir, recognition: false });
-    expect(seen[0]).toBeNull(); // nothing before round 1
-    expect(seen[1]).toEqual({ rounds: 1, graded: true, running: true });
+    // Round 1's graph is on disk before ComfyUI runs it; round 2 starts with round 1 graded.
+    expect(seen[0]).toEqual({ rounds: 1, graded: false, running: true });
+    expect(seen[1]).toEqual({ rounds: 2, graded: true, running: true });
     const final = JSON.parse(readFileSync(path.join(workDir, "trace.json"), "utf8"));
     expect(final.running).toBeUndefined();
     expect(final.rounds).toHaveLength(res.trace.rounds.length);
+  });
+
+  it("records each round's phase, running node and sampler steps for live progress", async () => {
+    let atRender: Record<string, any> | null = null;
+    let dir = "";
+    const { comfy, workDir } = await setup({
+      render: () => {
+        if (!atRender) atRender = JSON.parse(readFileSync(path.join(dir, "trace.json"), "utf8"));
+        return lanternPng(768, 768);
+      },
+    });
+    dir = workDir;
+    const { llm } = stubLlm({ plan: PLAN, critic: () => ({ items: [{ id: "count", pass: true }, { id: "background", pass: true }] }) });
+    const res = await generateAsset({ prompt: "lantern", width: 768, height: 768, seed: 1 }, { comfy, llm, plannerModel: "test/planner", criticModel: "test/critic", workDir, recognition: false });
+    expect(atRender!.rounds[0].phase).toBe("generating");
+    expect(Object.keys(atRender!.rounds[0].graph).length).toBeGreaterThan(3);
+    const r1 = res.trace.rounds[0]!;
+    expect(r1.phase).toBe("done");
+    expect(r1.progress).toMatchObject({ value: 2, max: 2 });
+    expect(r1.progress!.nodeId).toBe(Object.entries(r1.graph).find(([, n]) => n.class_type.startsWith("KSampler"))![0]);
   });
 
   describe("blind recognition", () => {
