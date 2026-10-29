@@ -319,13 +319,36 @@ describe("generateAsset", () => {
     const { llm } = stubLlm({ plan: PLAN, critic: () => ({ items: [{ id: "count", pass: true }, { id: "background", pass: true }] }) });
     const res = await generateAsset({ prompt: "lantern", width: 768, height: 768, seed: 1 }, { comfy, llm, plannerModel: "test/planner", criticModel: "test/critic", workDir, recognition: false });
     expect(atRender!.rounds[0].phase).toBe("generating");
-    expect(atRender!.rounds[0].queued).toBe(true); // written before ComfyUI started the prompt
+
     expect(Object.keys(atRender!.rounds[0].graph).length).toBeGreaterThan(3);
     const r1 = res.trace.rounds[0]!;
     expect(r1.phase).toBe("done");
     expect(r1.queued).toBe(false);
     expect(r1.progress).toMatchObject({ value: 2, max: 2 });
     expect(r1.progress!.nodeId).toBe(Object.entries(r1.graph).find(([, n]) => n.class_type.startsWith("KSampler"))![0]);
+  });
+
+  it("shows a round as queued while ComfyUI holds the prompt behind others", async () => {
+    const { comfy, workDir } = await setup({ queueDelayMs: 400, render: () => lanternPng(768, 768) });
+    const { llm } = stubLlm({ plan: PLAN, critic: () => ({ items: [{ id: "count", pass: true }, { id: "background", pass: true }] }) });
+    const seen: boolean[] = [];
+    let done = false;
+    const watch = (async () => {
+      while (!done) {
+        try {
+          const t = JSON.parse(readFileSync(path.join(workDir, "trace.json"), "utf8"));
+          if (t.rounds?.[0] && seen.at(-1) !== t.rounds[0].queued) seen.push(t.rounds[0].queued);
+        } catch {
+          // not written yet
+        }
+        await new Promise((r) => setTimeout(r, 10));
+      }
+    })();
+    await generateAsset({ prompt: "lantern", width: 768, height: 768, seed: 1 }, { comfy, llm, plannerModel: "test/planner", criticModel: "test/critic", workDir, recognition: false });
+    done = true;
+    await watch;
+    expect(seen[0]).toBe(true);
+    expect(seen).toContain(false);
   });
 
   describe("blind recognition", () => {
