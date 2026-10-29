@@ -40,6 +40,7 @@ Checklist rules:
 - 3 to 8 items. Each item is one visually checkable fact about the image: subject count, subject identity, colours, composition, background, style, absence of an unwanted element.
 - Write each item as a statement that is true for a correct image ("Exactly one paper lantern is visible").
 - Every explicit requirement in the request (a count, a colour, lighting or time of day, an empty area for text, an absence such as "no text" or "no people") gets its own item, worded as close to the request as possible. Do not drop, soften or merge them; add your own items only after these.
+- Your own items must not contradict the request or each other: the image has to be able to pass every item at once. When a subject's natural colour (nori, coffee, chocolate) would clash with a requested palette, write that part in the requested palette ("a soft muted-green nori wrap"), not as a separate colour rule.
 - Do not include size, resolution, file format or transparency items; code checks those.
 - For a transparent asset, grade the cut-out subject only. Never write an item about the key colour or the generation background: it is removed before grading.
 - Use short ids such as "count", "subject", "background", "style".
@@ -47,7 +48,7 @@ Checklist rules:
 Prompt rules depend on the model family:
 - Stable Diffusion checkpoints (sd15, sdxl): positive_prompt is a comma-separated visual description, most important first. State counts explicitly ("a single", "one", "solo"). No instructions, no negations. negative_prompt lists things to avoid, comma-separated (for example "multiple objects, duplicates, text, watermark, blurry").
 - Models with a language-model text encoder (zimage, flux2_klein, ming): positive_prompt is one to three plain descriptive sentences, the subject and its count first, then style, colours, composition and lighting. These models read sentences and follow counts and stated absences well ("The background is empty", "There is no text"). They are distilled and ignore the negative prompt: still fill negative_prompt, but put every requirement in the positive prompt. Do not set steps, cfg, sampler_name or scheduler for these families; their values are fixed.
-- Reference candidates (emoji and icon-font symbols), when the user message lists them, are shown in a numbered sheet. Pick at most the number allowed whose shape and concept best match the request, and give a short reason for each in references. Pick none when no candidate shows the requested subject: a wrong reference is worse than none. A reference supplies shape and concept only; never describe its colours or rendering in positive_prompt, describe the requested style instead. The system adds the reference instructions to the prompt itself.
+- Reference candidates (emoji and icon-font symbols), when the user message lists them, are shown in a numbered sheet. You must answer in references. When a candidate shows the requested subject, choose it (at most the number allowed), with a short reason each: a matching reference gives the model a clear, recognisable shape. Choose none only when no candidate shows the requested subject (a wrong reference is worse than none), and then say why in reference_note. A reference supplies shape and concept only; never describe its colours or rendering in positive_prompt, describe the requested style instead. The system adds the reference instructions to the prompt itself.
 - Icons already made for the same set, when shown, fix the set's style. Describe that style (rendering, palette, outline weight, lighting, level of detail) in positive_prompt so this icon matches it, while drawing its own subject.
 - When the asset needs a transparent background, describe the subject only; the system adds the plain background phrase itself. The user message says how the subject is cut out (a matting model, or chroma keying) and lists the allowed background colours. Choose key_color from that list so it is far from every colour in the subject, including its outline, highlights and any steam, smoke or glow: a white or cream subject needs a dark backdrop, a black subject a light one.`;
 
@@ -123,6 +124,12 @@ export const PLAN_SCHEMA: JsonSchema = {
   },
   required: ["checklist", "positive_prompt", "negative_prompt"],
 };
+
+/** The plan schema, with an answer about references required when candidates are listed. */
+export function planSchema(withReferenceCandidates: boolean): JsonSchema {
+  if (!withReferenceCandidates) return PLAN_SCHEMA;
+  return { ...PLAN_SCHEMA, required: [...(PLAN_SCHEMA.required as string[]), "references"] };
+}
 
 export const REPAIR_SCHEMA: JsonSchema = {
   type: "object",

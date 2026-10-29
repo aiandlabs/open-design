@@ -11,7 +11,7 @@ import { alphaStats, createImage, decodePng, encodePng, type RgbaImage } from ".
 import { AiandClient } from "../src/llm.js";
 import { generateAsset } from "../src/loop.js";
 import { createToolHandler } from "../src/mcp.js";
-import { CRITIC_TOOL, normalizeCriticItems, PLAN_TOOL, REPAIR_TOOL } from "../src/prompts.js";
+import { CRITIC_TOOL, normalizeCriticItems, PLAN_TOOL, PLANNER_SYSTEM, REPAIR_TOOL } from "../src/prompts.js";
 import type { ApiWorkflow } from "../src/types.js";
 import { startFakeComfy, type FakeComfy, type FakeComfyOptions } from "./fixtures/fake-comfy.js";
 import { FAMILY_NODES } from "./fixtures/object-info-families.js";
@@ -328,6 +328,36 @@ describe("generateAsset", () => {
       expect(r1.checks.find((c) => c.id === "reference_copy")).toMatchObject({ pass: true });
       expect(r1.referenceSimilarity).toEqual([expect.objectContaining({ id: "emoji:2615", nearCopy: false })]);
       expect(res.trace.stopReason).toBe("all-pass");
+    });
+
+    it("makes the planner answer the reference question whenever candidates are listed", async () => {
+      const { comfy, workDir } = await setup({ objectInfo: kleinInfo(), render: () => encodePng(subject(768, [200, 40, 40])) });
+      const { library } = fakeLibrary();
+      const { llm, log } = stubLlm({ plan: { ...ICON_PLAN, references: [] , reference_note: "none fits" }, critic: () => ({ items: [{ id: "subject", pass: true }] }) });
+      await generateAsset(
+        { prompt: "a coffee cup icon with steam, flat style", width: 512, height: 512, transparent: true, kind: "icon" },
+        { comfy, llm, plannerModel: "test/planner", criticModel: "test/critic", workDir, references: { library } },
+      );
+      const body = JSON.stringify(log.find((l) => l.tool === PLAN_TOOL)!.body);
+      // The tool schema sent with candidates requires an answer about references.
+      expect(body).toMatch(/"required":\["checklist","positive_prompt","negative_prompt","references"\]/);
+      expect(JSON.stringify(log.find((l) => l.tool === PLAN_TOOL)!.body)).toMatch(/When a candidate shows the requested subject, choose it/);
+    });
+
+    it("tells the planner its own checklist items must not contradict the request or each other", () => {
+      expect(PLANNER_SYSTEM).toMatch(/must not contradict the request or each other/);
+      expect(PLANNER_SYSTEM).toMatch(/in the requested palette/);
+    });
+
+    it("does not require a reference answer when no candidates are listed", async () => {
+      const { comfy, workDir } = await setup({ objectInfo: kleinInfo(), render: () => encodePng(subject(768, [200, 40, 40])) });
+      const { llm, log } = stubLlm({ plan: ICON_PLAN, critic: () => ({ items: [{ id: "subject", pass: true }] }) });
+      await generateAsset(
+        { prompt: "a coffee cup icon with steam, flat style", width: 512, height: 512, transparent: true, kind: "icon" },
+        { comfy, llm, plannerModel: "test/planner", criticModel: "test/critic", workDir },
+      );
+      const body = JSON.stringify(log.find((l) => l.tool === PLAN_TOOL)!.body);
+      expect(body).toMatch(/"required":\["checklist","positive_prompt","negative_prompt"\]/);
     });
 
     it("fails an output that copies its reference, drops the reference on repair, and does not return the copy", async () => {
