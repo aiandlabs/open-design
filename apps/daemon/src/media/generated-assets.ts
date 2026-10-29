@@ -57,12 +57,34 @@ async function findTraces(root: string, rel = '', depth = 0, out: string[] = [])
   return out;
 }
 
+/**
+ * Where the image is now. Older media outputs flattened a requested
+ * `assets/hero.png` to `assets_hero.png`, and agents then moved the image
+ * (and sometimes the trace) into the folder they meant. Before calling an
+ * image deleted, look next to the trace and at the unflattened path.
+ */
+function locateAsset(projectDir: string, recorded: string, traceStem: string): string {
+  const ext = path.posix.extname(recorded) || '.png';
+  const candidates = [recorded, `${traceStem}${ext}`];
+  const base = path.posix.basename(recorded);
+  if (base.includes('_')) {
+    const dir = path.posix.dirname(recorded);
+    const parts = base.split('_');
+    for (let i = 1; i < parts.length; i += 1) {
+      const nested = `${parts.slice(0, i).join('/')}/${parts.slice(i).join('_')}`;
+      candidates.push(dir === '.' ? nested : `${dir}/${nested}`);
+    }
+  }
+  return candidates.find((c) => existsSync(path.join(projectDir, c))) ?? recorded;
+}
+
 function assetFromTrace(projectDir: string, traceRel: string, trace: TraceFile): GeneratedAsset | null {
   const isAgent = typeof trace.asset === 'string' && !!trace.request;
   const isWorkflow = trace.kind === 'comfyui-workflow';
   if (!isAgent && !isWorkflow) return null;
   const stem = traceRel.slice(0, -TRACE_SUFFIX.length);
-  const assetRel = isAgent ? toPosix(trace.asset as string) : `${toPosix(stem)}.png`;
+  const recorded = isAgent ? toPosix(trace.asset as string) : `${toPosix(stem)}.png`;
+  const assetRel = locateAsset(projectDir, recorded, toPosix(stem));
   const exists = existsSync(path.join(projectDir, assetRel));
   const stored = trace.review;
   const review: GeneratedAssetReview = !exists

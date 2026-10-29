@@ -100,3 +100,40 @@ describe('generated assets', () => {
     expect(refs).toEqual([{ id: 'icons/a.png', label: 'a icons/a icon', png: Buffer.from('png') }]);
   });
 });
+
+describe('generated assets whose files moved after generation', () => {
+  /** A trace as written under a flattened output name (`assets_hero.png`), then the agent moved files. */
+  async function flattenedTrace(traceAt: string) {
+    await mkdir(path.dirname(path.join(dir, traceAt)), { recursive: true });
+    await writeFile(path.join(dir, traceAt), JSON.stringify({ id: 't', request: { prompt: 'melon-pan', width: 1024, height: 576 }, asset: 'assets_hero.png' }));
+  }
+
+  it('finds the image at the unflattened path when only the image moved', async () => {
+    await flattenedTrace('assets_hero.trace.json');
+    await mkdir(path.join(dir, 'assets'), { recursive: true });
+    await writeFile(path.join(dir, 'assets', 'hero.png'), Buffer.from('png'));
+    const [a] = await listGeneratedAssets(dir);
+    expect(a).toMatchObject({ path: 'assets/hero.png', exists: true, review: { state: 'accepted', reason: 'default' } });
+  });
+
+  it('finds the image next to the trace when both moved', async () => {
+    await flattenedTrace('assets/hero.trace.json');
+    await writeFile(path.join(dir, 'assets', 'hero.png'), Buffer.from('png'));
+    const [a] = await listGeneratedAssets(dir);
+    expect(a).toMatchObject({ path: 'assets/hero.png', exists: true, review: { state: 'accepted' } });
+  });
+
+  it('still counts a deleted image as rejected', async () => {
+    await flattenedTrace('assets_hero.trace.json');
+    const [a] = await listGeneratedAssets(dir);
+    expect(a).toMatchObject({ path: 'assets_hero.png', exists: false, review: { state: 'rejected', reason: 'deleted' } });
+  });
+
+  it('reviews the moved image by its real path', async () => {
+    await flattenedTrace('assets_hero.trace.json');
+    await mkdir(path.join(dir, 'assets'), { recursive: true });
+    await writeFile(path.join(dir, 'assets', 'hero.png'), Buffer.from('png'));
+    const a = await setGeneratedAssetReview(dir, 'assets/hero.png', 'rejected', 'api');
+    expect(a).toMatchObject({ path: 'assets/hero.png', review: { state: 'rejected', reason: 'user' } });
+  });
+});

@@ -107,6 +107,7 @@ import {
   kindFor,
   mimeFor,
   sanitizeName,
+  sanitizePath,
 } from '../projects.js';
 import {
   AIHUBMIX_DEFAULT_BASE_URL,
@@ -539,9 +540,7 @@ export async function generateMedia(args: {
   const warnings = [lengthClamp.warning, durationClamp.warning].filter(Boolean);
 
   const dir = await ensureProject(projectsRoot, projectId);
-  const safeOut = sanitizeName(
-    output || autoOutputName(surface, model, resolvedAudioKind),
-  );
+  const safeOut = output ? safeMediaOutputName(output) : sanitizeName(autoOutputName(surface, model, resolvedAudioKind));
   const target = path.join(dir, safeOut);
   await mkdir(path.dirname(target), { recursive: true });
 
@@ -4477,4 +4476,17 @@ function truncate(s: unknown, n: number): string {
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * A requested media output name, kept inside the project. Safe subfolders
+ * stay (`assets/hero.png` is written there, as the upload route does with
+ * sanitizePath); anything invalid falls back to one flattened name.
+ */
+export function safeMediaOutputName(raw: string): string {
+  try {
+    return sanitizePath(raw);
+  } catch {
+    return sanitizeName(raw);
+  }
 }
